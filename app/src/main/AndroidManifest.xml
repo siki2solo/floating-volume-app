@@ -15,7 +15,7 @@
         android:allowBackup="true"
         android:label="Floating Volume"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
 
         <activity
             android:name=".MainActivity"

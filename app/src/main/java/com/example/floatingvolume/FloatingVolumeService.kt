@@ -49,6 +49,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     private var initialTouchY = 0f
 
     private val longPressRunnable = Runnable {
+        if (isPositionLocked()) return@Runnable
         isDragging = true
         floatingView?.apply {
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -68,7 +69,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         startAsForegroundService()
         createFloatingOverlay()
 
-        // Sync live changes from MainActivity SeekBars and RadioGroup immediately
+        // Live sync all appearance and Portrait/Landscape location edits from MainActivity
         prefs.registerOnSharedPreferenceChangeListener(this)
     }
 
@@ -91,24 +92,37 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
         when (key) {
-            KEY_WIDTH_DP, KEY_HEIGHT_DP, KEY_TRANSPARENCY_PCT, KEY_SHAPE -> {
+            KEY_WIDTH_DP, KEY_HEIGHT_DP, KEY_TRANSPARENCY_PCT, KEY_SHAPE, KEY_OVERLAY_COLOR -> {
                 applyAppearanceFromPrefs()
+            }
+            KEY_POS_X_PORTRAIT, KEY_POS_Y_PORTRAIT, KEY_POS_X_LANDSCAPE, KEY_POS_Y_LANDSCAPE -> {
+                moveOverlayToOrientationPosition(
+                    resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+                )
             }
         }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        val view = floatingView ?: return
-
-        // Restore coordinates saved specifically for the new orientation
         val isLandscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
+        moveOverlayToOrientationPosition(isLandscape)
+    }
+
+    private fun moveOverlayToOrientationPosition(isLandscape: Boolean) {
+        val view = floatingView ?: return
         val (savedX, savedY) = loadPositionForOrientation(isLandscape)
         val (clampedX, clampedY) = clampCoordinates(savedX, savedY)
 
         layoutParams.x = clampedX
         layoutParams.y = clampedY
-        windowManager.updateViewLayout(view, layoutParams)
+        if (view.isAttachedToWindow) {
+            windowManager.updateViewLayout(view, layoutParams)
+        }
+    }
+
+    private fun isPositionLocked(): Boolean {
+        return prefs.getBoolean(KEY_POSITION_LOCKED, false)
     }
 
     private fun startAsForegroundService() {
@@ -202,7 +216,9 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                     initialY = layoutParams.y
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
-                    mainHandler.postDelayed(longPressRunnable, LONG_PRESS_TIMEOUT_MS)
+                    if (!isPositionLocked()) {
+                        mainHandler.postDelayed(longPressRunnable, LONG_PRESS_TIMEOUT_MS)
+                    }
                     true
                 }
 
@@ -214,7 +230,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                         if (hypot(dx.toDouble(), dy.toDouble()) > touchSlop) {
                             mainHandler.removeCallbacks(longPressRunnable)
                         }
-                    } else {
+                    } else if (!isPositionLocked()) {
                         val (clampedX, clampedY) = clampCoordinates(
                             initialX + dx.toInt(),
                             initialY + dy.toInt()
@@ -273,15 +289,18 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     private fun applyAppearanceFromPrefs(addIfMissing: Boolean = true) {
         val view = floatingView ?: return
 
-        val widthDp = prefs.getInt(KEY_WIDTH_DP, DEFAULT_WIDTH_DP)
-        val heightDp = prefs.getInt(KEY_HEIGHT_DP, DEFAULT_HEIGHT_DP)
-        val transparencyPct = prefs.getInt(KEY_TRANSPARENCY_PCT, DEFAULT_TRANSPARENCY_PCT)
+        val widthDp = prefs.getInt(KEY_WIDTH_DP, DEFAULT_WIDTH_DP).coerceAtLeast(1)
+        val heightDp = prefs.getInt(KEY_HEIGHT_DP, DEFAULT_HEIGHT_DP).coerceAtLeast(1)
+        val transparencyPct =
+            prefs.getInt(KEY_TRANSPARENCY_PCT, DEFAULT_TRANSPARENCY_PCT).coerceIn(0, 100)
         val shape = prefs.getString(KEY_SHAPE, SHAPE_CIRCLE)
+        val baseColor = prefs.getInt(KEY_OVERLAY_COLOR, DEFAULT_COLOR)
 
         val widthPx = dpToPx(widthDp)
         val heightPx = dpToPx(heightDp)
         val alpha = ((transparencyPct / 100f) * 255).toInt().coerceIn(0, 255)
-        val strokeAlpha = min(255, alpha + 45)
+        // At 0% opacity, set strokeAlpha to 0 as well so the overlay is completely invisible
+        val strokeAlpha = if (alpha == 0) 0 else min(255, alpha + 45)
 
         if (shape == SHAPE_LINE) {
             overlayDrawable.shape = GradientDrawable.RECTANGLE
@@ -290,7 +309,9 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             overlayDrawable.shape = GradientDrawable.OVAL
         }
 
-        overlayDrawable.setColor(Color.argb(alpha, 37, 99, 235))
+        overlayDrawable.setColor(
+            Color.argb(alpha, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
+        )
         overlayDrawable.setStroke(dpToPx(2), Color.argb(strokeAlpha, 255, 255, 255))
 
         layoutParams.width = widthPx
@@ -369,6 +390,9 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val KEY_HEIGHT_DP = "height_dp"
         const val KEY_TRANSPARENCY_PCT = "transparency_pct"
         const val KEY_SHAPE = "shape"
+        const val KEY_OVERLAY_COLOR = "overlay_color"
+        const val KEY_POSITION_LOCKED = "position_locked"
+        const val KEY_DARK_THEME = "dark_theme"
 
         const val KEY_POS_X_PORTRAIT = "pos_x_portrait"
         const val KEY_POS_Y_PORTRAIT = "pos_y_portrait"
@@ -378,9 +402,10 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val SHAPE_CIRCLE = "circle"
         const val SHAPE_LINE = "line"
 
-        const val DEFAULT_WIDTH_DP = 56
-        const val DEFAULT_HEIGHT_DP = 112
-        const val DEFAULT_TRANSPARENCY_PCT = 82
+        const val DEFAULT_WIDTH_DP = 80
+        const val DEFAULT_HEIGHT_DP = 156
+        const val DEFAULT_TRANSPARENCY_PCT = 23
+        val DEFAULT_COLOR = 0xFF000000.toInt()
 
         private const val CHANNEL_ID = "floating_volume_channel"
         private const val NOTIFICATION_ID = 1001

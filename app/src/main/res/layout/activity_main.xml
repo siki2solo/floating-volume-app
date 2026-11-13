@@ -3,7 +3,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:fillViewport="true"
-    android:background="#F8FAFC">
+    android:background="@color/bg_screen">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -11,14 +11,30 @@
         android:orientation="vertical"
         android:padding="24dp">
 
-        <TextView
-            android:id="@+id/tvTitle"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Floating Volume Control"
-            android:textColor="#0F172A"
-            android:textSize="22sp"
-            android:textStyle="bold" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Floating Volume Control"
+                android:textColor="@color/text_primary"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <Switch
+                android:id="@+id/switchDarkTheme"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="Dark"
+                android:textColor="@color/text_secondary" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/tvPermissionStatus"
@@ -26,7 +42,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
             android:text="Overlay permission: Checking..."
-            android:textColor="#475569"
+            android:textColor="@color/text_secondary"
             android:textSize="14sp" />
 
         <!-- 1. Button to request 'Display over other apps' permission -->
@@ -52,21 +68,21 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
             android:text="Stop Floating Service"
-            android:textColor="#DC2626" />
+            android:textColor="#EF4444" />
 
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
             android:layout_marginTop="20dp"
             android:layout_marginBottom="20dp"
-            android:background="#E2E8F0" />
+            android:background="@color/divider_line" />
 
         <!-- 4. RadioGroup to choose between Circle and Line shapes -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Overlay Shape"
-            android:textColor="#0F172A"
+            android:textColor="@color/text_primary"
             android:textSize="15sp"
             android:textStyle="bold" />
 
@@ -82,19 +98,21 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:checked="true"
-                android:text="Circle" />
+                android:checked="false"
+                android:text="Circle"
+                android:textColor="@color/text_primary" />
 
             <RadioButton
                 android:id="@+id/radioLine"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:checked="false"
-                android:text="Line" />
+                android:checked="true"
+                android:text="Line"
+                android:textColor="@color/text_primary" />
         </RadioGroup>
 
-        <!-- 3. SeekBars (sliders) for Width, Height, and Transparency -->
+        <!-- 3. SeekBars (sliders) for Width (1-160dp), Height (24-220dp), and Opacity (0-100%) -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -105,8 +123,8 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Width (dp)"
-                android:textColor="#0F172A"
+                android:text="Width (1 - 160 dp)"
+                android:textColor="@color/text_primary"
                 android:textSize="14sp"
                 android:textStyle="bold" />
 
@@ -114,8 +132,8 @@
                 android:id="@+id/tvWidthValue"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="56 dp"
-                android:textColor="#475569"
+                android:text="80 dp"
+                android:textColor="@color/text_secondary"
                 android:textSize="14sp" />
         </LinearLayout>
 
@@ -124,8 +142,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:max="128"
-            android:progress="24" />
+            android:max="159"
+            android:progress="79" />
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -137,8 +155,8 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Height (dp)"
-                android:textColor="#0F172A"
+                android:text="Height (24 - 220 dp)"
+                android:textColor="@color/text_primary"
                 android:textSize="14sp"
                 android:textStyle="bold" />
 
@@ -146,8 +164,8 @@
                 android:id="@+id/tvHeightValue"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="112 dp"
-                android:textColor="#475569"
+                android:text="156 dp"
+                android:textColor="@color/text_secondary"
                 android:textSize="14sp" />
         </LinearLayout>
 
@@ -156,8 +174,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:max="156"
-            android:progress="48" />
+            android:max="196"
+            android:progress="132" />
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -169,8 +187,8 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Opacity"
-                android:textColor="#0F172A"
+                android:text="Opacity (0% = Hidden)"
+                android:textColor="@color/text_primary"
                 android:textSize="14sp"
                 android:textStyle="bold" />
 
@@ -178,8 +196,8 @@
                 android:id="@+id/tvTransparencyValue"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="82%"
-                android:textColor="#475569"
+                android:text="23%"
+                android:textColor="@color/text_secondary"
                 android:textSize="14sp" />
         </LinearLayout>
 
@@ -188,15 +206,223 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:max="85"
-            android:progress="67" />
+            android:max="100"
+            android:progress="23" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="20dp"
+            android:background="@color/divider_line" />
+
+        <!-- Color Picker (Presets + RGB Sliders) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Overlay Color"
+                android:textColor="@color/text_primary"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <View
+                android:id="@+id/viewColorPreview"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:layout_marginEnd="8dp"
+                android:background="#000000" />
+
+            <TextView
+                android:id="@+id/tvColorHex"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="#000000"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnColorBlue"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:backgroundTint="#2563EB" />
+
+            <Button
+                android:id="@+id/btnColorEmerald"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:backgroundTint="#10B981" />
+
+            <Button
+                android:id="@+id/btnColorAmber"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:backgroundTint="#F59E0B" />
+
+            <Button
+                android:id="@+id/btnColorRose"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:backgroundTint="#E11D48" />
+
+            <Button
+                android:id="@+id/btnColorCyan"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:backgroundTint="#06B6D4" />
+
+            <Button
+                android:id="@+id/btnColorWhite"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_weight="1"
+                android:backgroundTint="#F8FAFC" />
+        </LinearLayout>
+
+        <SeekBar
+            android:id="@+id/seekBarRed"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:max="255"
+            android:progressTint="#EF4444" />
+
+        <SeekBar
+            android:id="@+id/seekBarGreen"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:max="255"
+            android:progressTint="#22C55E" />
+
+        <SeekBar
+            android:id="@+id/seekBarBlue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:max="255"
+            android:progressTint="#3B82F6" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="20dp"
+            android:background="@color/divider_line" />
+
+        <!-- Portrait & Landscape Dedicated Location Setup + Lock -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Orientation Positions &amp; Lock"
+            android:textColor="@color/text_primary"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <Switch
+            android:id="@+id/switchLockPosition"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:checked="false"
+            android:text="Lock Icon Position (Disable Dragging)"
+            android:textColor="@color/text_primary" />
+
+        <TextView
+            android:id="@+id/tvSavedPositions"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Portrait: (252, 184)  |  Landscape: (0, 33)"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+
+        <RadioGroup
+            android:id="@+id/radioGroupOrientTarget"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/radioTargetPortrait"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:checked="true"
+                android:text="Set Portrait Spot"
+                android:textColor="@color/text_primary" />
+
+            <RadioButton
+                android:id="@+id/radioTargetLandscape"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Set Landscape Spot"
+                android:textColor="@color/text_primary" />
+        </RadioGroup>
+
+        <TextView
+            android:id="@+id/tvPosXLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="Horizontal Position (X)"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+
+        <SeekBar
+            android:id="@+id/seekBarPosX"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:max="100" />
+
+        <TextView
+            android:id="@+id/tvPosYLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="Vertical Position (Y)"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+
+        <SeekBar
+            android:id="@+id/seekBarPosY"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:max="100" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:text="Tap upper half for Volume Up, lower half for Volume Down. Long-press and drag to reposition separately for Portrait and Landscape."
-            android:textColor="#64748B"
+            android:layout_marginTop="18dp"
+            android:text="Tap upper half for Volume Up, lower half for Volume Down. Set separate Portrait and Landscape locations above, then enable Lock so orientation changes snap the icon automatically."
+            android:textColor="@color/text_secondary"
             android:textSize="13sp" />
 
     </LinearLayout>
