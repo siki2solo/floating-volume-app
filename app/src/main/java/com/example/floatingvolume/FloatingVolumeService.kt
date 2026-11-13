@@ -48,6 +48,9 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var isDragging = false
+    private var repeatActive = false
+    private var repeatUpperHalf = true
+    private var isIdleDimmed = false
     private var touchSlop = 0
     private var lastAppliedLandscape: Boolean? = null
 
@@ -66,6 +69,31 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             animate().scaleX(1.08f).scaleY(1.08f).setDuration(120).start()
         }
+    }
+
+    private val repeatVolumeRunnable = object : Runnable {
+        override fun run() {
+            if (!repeatActive) return
+            val view = floatingView ?: return
+            triggerHapticIfEnabled(view)
+            adjustVolume(if (repeatUpperHalf) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER)
+            mainHandler.postDelayed(this, REPEAT_INTERVAL_MS)
+        }
+    }
+
+    private val startRepeatRunnable = Runnable {
+        val view = floatingView ?: return@Runnable
+        if (!isPositionLocked() || !prefs.getBoolean(KEY_HOLD_TO_REPEAT, true)) return@Runnable
+        repeatActive = true
+        triggerHapticIfEnabled(view)
+        adjustVolume(if (repeatUpperHalf) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER)
+        mainHandler.postDelayed(repeatVolumeRunnable, REPEAT_INTERVAL_MS)
+    }
+
+    private val autoDimRunnable = Runnable {
+        if (prefs.getInt(KEY_AUTO_DIM_SEC, DEFAULT_AUTO_DIM_SEC) <= 0) return@Runnable
+        isIdleDimmed = true
+        applyAppearanceFromPrefs()
     }
 
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -92,20 +120,46 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
         startAsForegroundService()
         createFloatingOverlay()
+        scheduleAutoDim()
 
         displayManager.registerDisplayListener(displayListener, mainHandler)
         prefs.registerOnSharedPreferenceChangeListener(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        applyAppearanceFromPrefs()
-        handleOrientationCheck(showNotice = false)
+        when (intent?.action) {
+            ACTION_VOL_UP -> {
+                wakeFromIdleAndScheduleDim()
+                adjustVolume(AudioManager.ADJUST_RAISE)
+            }
+            ACTION_VOL_DOWN -> {
+                wakeFromIdleAndScheduleDim()
+                adjustVolume(AudioManager.ADJUST_LOWER)
+            }
+            ACTION_TOGGLE_MUTE -> {
+                wakeFromIdleAndScheduleDim()
+                adjustVolume(AudioManager.ADJUST_TOGGLE_MUTE)
+            }
+            ACTION_TOGGLE_LOCK -> {
+                val nextLocked = !isPositionLocked()
+                prefs.edit().putBoolean(KEY_POSITION_LOCKED, nextLocked).apply()
+                refreshForegroundNotification()
+            }
+            else -> {
+                applyAppearanceFromPrefs()
+                handleOrientationCheck(showNotice = false)
+                scheduleAutoDim()
+            }
+        }
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
         mainHandler.removeCallbacks(longPressRunnable)
+        mainHandler.removeCallbacks(startRepeatRunnable)
+        mainHandler.removeCallbacks(repeatVolumeRunnable)
+        mainHandler.removeCallbacks(autoDimRunnable)
         pendingSingleTapRunnable?.let { mainHandler.removeCallbacks(it) }
         displayManager.unregisterDisplayListener(displayListener)
         prefs.unregisterOnSharedPreferenceChangeListener(this)
@@ -125,6 +179,12 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         when (key) {
             KEY_WIDTH_DP, KEY_HEIGHT_DP, KEY_TRANSPARENCY_PCT, KEY_SHAPE, KEY_OVERLAY_COLOR -> {
                 applyAppearanceFromPrefs()
+            }
+            KEY_AUTO_DIM_SEC, KEY_DIM_OPACITY_PCT -> {
+                wakeFromIdleAndScheduleDim()
+            }
+            KEY_POSITION_LOCKED -> {
+                refreshForegroundNotification()
             }
             KEY_SNAP_TO_EDGE -> {
                 if (prefs.getBoolean(KEY_SNAP_TO_EDGE, false)) {
@@ -242,6 +302,27 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         }
     }
 
+    private fun refreshForegroundNotification() {
+        val modeLabel = if (isCurrentlyLandscape()) "Landscape" else "Portrait"
+        val lockState = if (isPositionLocked()) "Locked" else "Unlocked"
+        notificationManager.notify(
+            NOTIFICATION_ID,
+            buildForegroundNotification("$modeLabel · Position $lockState")
+        )
+    }
+
+    private fun buildServiceActionPendingIntent(action: String, requestCode: Int): PendingIntent {
+        val actionIntent = Intent(this, FloatingVolumeService::class.java).apply {
+            this.action = action
+        }
+        return PendingIntent.getService(
+            this,
+            requestCode,
+            actionIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
     private fun buildForegroundNotification(statusText: String): Notification {
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -253,13 +334,18 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val lockLabel = if (isPositionLocked()) "Unlock" else "Lock"
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Floating Volume Active")
+            .setContentTitle(getString(R.string.app_name))
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(pendingIntent)
+            .addAction(0, "Vol -", buildServiceActionPendingIntent(ACTION_VOL_DOWN, 10))
+            .addAction(0, "Vol +", buildServiceActionPendingIntent(ACTION_VOL_UP, 11))
+            .addAction(0, lockLabel, buildServiceActionPendingIntent(ACTION_TOGGLE_LOCK, 12))
             .build()
     }
 
@@ -298,13 +384,19 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         view.setOnTouchListener { v, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    wakeFromIdleAndScheduleDim()
                     isDragging = false
+                    repeatActive = false
+                    repeatUpperHalf = event.y < v.height / 2f
                     initialX = layoutParams.x
                     initialY = layoutParams.y
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
+
                     if (!isPositionLocked()) {
                         mainHandler.postDelayed(longPressRunnable, LONG_PRESS_TIMEOUT_MS)
+                    } else if (prefs.getBoolean(KEY_HOLD_TO_REPEAT, true)) {
+                        mainHandler.postDelayed(startRepeatRunnable, REPEAT_START_DELAY_MS)
                     }
                     true
                 }
@@ -316,6 +408,8 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                     if (!isDragging) {
                         if (hypot(dx.toDouble(), dy.toDouble()) > touchSlop) {
                             mainHandler.removeCallbacks(longPressRunnable)
+                            mainHandler.removeCallbacks(startRepeatRunnable)
+                            mainHandler.removeCallbacks(repeatVolumeRunnable)
                         }
                     } else if (!isPositionLocked()) {
                         val (clampedX, clampedY) = clampCoordinates(
@@ -331,7 +425,13 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
                 MotionEvent.ACTION_UP -> {
                     mainHandler.removeCallbacks(longPressRunnable)
-                    if (isDragging) {
+                    mainHandler.removeCallbacks(startRepeatRunnable)
+                    mainHandler.removeCallbacks(repeatVolumeRunnable)
+                    scheduleAutoDim()
+
+                    if (repeatActive) {
+                        repeatActive = false
+                    } else if (isDragging) {
                         isDragging = false
                         v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
                         if (prefs.getBoolean(KEY_SNAP_TO_EDGE, false)) {
@@ -352,6 +452,10 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
                 MotionEvent.ACTION_CANCEL -> {
                     mainHandler.removeCallbacks(longPressRunnable)
+                    mainHandler.removeCallbacks(startRepeatRunnable)
+                    mainHandler.removeCallbacks(repeatVolumeRunnable)
+                    repeatActive = false
+                    scheduleAutoDim()
                     if (isDragging) {
                         isDragging = false
                         v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
@@ -417,19 +521,42 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         }
     }
 
+    private fun wakeFromIdleAndScheduleDim() {
+        mainHandler.removeCallbacks(autoDimRunnable)
+        if (isIdleDimmed) {
+            isIdleDimmed = false
+            applyAppearanceFromPrefs()
+        }
+        scheduleAutoDim()
+    }
+
+    private fun scheduleAutoDim() {
+        mainHandler.removeCallbacks(autoDimRunnable)
+        val dimSec = prefs.getInt(KEY_AUTO_DIM_SEC, DEFAULT_AUTO_DIM_SEC)
+        if (dimSec > 0) {
+            mainHandler.postDelayed(autoDimRunnable, dimSec * 1000L)
+        } else if (isIdleDimmed) {
+            isIdleDimmed = false
+            applyAppearanceFromPrefs()
+        }
+    }
+
     private fun applyAppearanceFromPrefs(addIfMissing: Boolean = true) {
         val view = floatingView ?: return
 
         val widthDp = prefs.getInt(KEY_WIDTH_DP, DEFAULT_WIDTH_DP).coerceAtLeast(1)
         val heightDp = prefs.getInt(KEY_HEIGHT_DP, DEFAULT_HEIGHT_DP).coerceAtLeast(1)
-        val transparencyPct =
+        val basePct =
             prefs.getInt(KEY_TRANSPARENCY_PCT, DEFAULT_TRANSPARENCY_PCT).coerceIn(0, 100)
+        val dimPct =
+            prefs.getInt(KEY_DIM_OPACITY_PCT, DEFAULT_DIM_OPACITY_PCT).coerceIn(0, 50)
+        val effectivePct = if (isIdleDimmed) min(basePct, dimPct) else basePct
         val shape = prefs.getString(KEY_SHAPE, SHAPE_CIRCLE)
         val baseColor = prefs.getInt(KEY_OVERLAY_COLOR, DEFAULT_COLOR)
 
         val widthPx = dpToPx(widthDp)
         val heightPx = dpToPx(heightDp)
-        val alpha = ((transparencyPct / 100f) * 255).toInt().coerceIn(0, 255)
+        val alpha = ((effectivePct / 100f) * 255).toInt().coerceIn(0, 255)
         val strokeAlpha = if (alpha == 0) 0 else min(255, alpha + 45)
 
         if (shape == SHAPE_LINE) {
@@ -530,7 +657,10 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val KEY_HAPTIC_TAP = "haptic_tap"
         const val KEY_SNAP_TO_EDGE = "snap_to_edge"
         const val KEY_DOUBLE_TAP_MUTE = "double_tap_mute"
+        const val KEY_HOLD_TO_REPEAT = "hold_to_repeat"
         const val KEY_AUTO_BOOT = "auto_start_boot"
+        const val KEY_AUTO_DIM_SEC = "auto_dim_seconds"
+        const val KEY_DIM_OPACITY_PCT = "dim_opacity_pct"
         const val KEY_IS_SERVICE_RUNNING = "is_service_running"
 
         const val KEY_POS_X_PORTRAIT = "pos_x_portrait"
@@ -550,11 +680,20 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val DEFAULT_WIDTH_DP = 56
         const val DEFAULT_HEIGHT_DP = 112
         const val DEFAULT_TRANSPARENCY_PCT = 82
+        const val DEFAULT_AUTO_DIM_SEC = 0
+        const val DEFAULT_DIM_OPACITY_PCT = 15
         val DEFAULT_COLOR = 0xFF2563EB.toInt()
+
+        const val ACTION_VOL_UP = "com.example.floatingvolume.ACTION_VOL_UP"
+        const val ACTION_VOL_DOWN = "com.example.floatingvolume.ACTION_VOL_DOWN"
+        const val ACTION_TOGGLE_MUTE = "com.example.floatingvolume.ACTION_TOGGLE_MUTE"
+        const val ACTION_TOGGLE_LOCK = "com.example.floatingvolume.ACTION_TOGGLE_LOCK"
 
         private const val CHANNEL_ID = "floating_volume_channel"
         private const val NOTIFICATION_ID = 1001
         private const val LONG_PRESS_TIMEOUT_MS = 400L
+        private const val REPEAT_START_DELAY_MS = 380L
+        private const val REPEAT_INTERVAL_MS = 130L
         private const val DOUBLE_TAP_TIMEOUT_MS = 220L
     }
 }

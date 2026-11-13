@@ -36,6 +36,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnOverlayPermission: Button
     private lateinit var btnStartService: Button
     private lateinit var btnStopService: Button
+    private lateinit var btnPresetGaming: Button
+    private lateinit var btnPresetBedtime: Button
+    private lateinit var btnPresetStealth: Button
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private lateinit var switchDarkTheme: Switch
@@ -50,6 +53,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var switchDoubleTapMute: Switch
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchHoldRepeat: Switch
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
     private lateinit var switchAutoBoot: Switch
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")
@@ -60,12 +66,15 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var radioGroupStream: RadioGroup
     private lateinit var radioGroupShape: RadioGroup
+    private lateinit var radioGroupAutoDim: RadioGroup
     private lateinit var seekBarWidth: SeekBar
     private lateinit var seekBarHeight: SeekBar
     private lateinit var seekBarTransparency: SeekBar
+    private lateinit var seekBarDimOpacity: SeekBar
     private lateinit var tvWidthValue: TextView
     private lateinit var tvHeightValue: TextView
     private lateinit var tvTransparencyValue: TextView
+    private lateinit var tvDimOpacityValue: TextView
 
     private lateinit var viewColorPreview: View
     private lateinit var tvColorHex: TextView
@@ -138,23 +147,30 @@ class MainActivity : AppCompatActivity() {
         btnOverlayPermission = findViewById(R.id.btnOverlayPermission)
         btnStartService = findViewById(R.id.btnStartService)
         btnStopService = findViewById(R.id.btnStopService)
+        btnPresetGaming = findViewById(R.id.btnPresetGaming)
+        btnPresetBedtime = findViewById(R.id.btnPresetBedtime)
+        btnPresetStealth = findViewById(R.id.btnPresetStealth)
 
         switchDarkTheme = findViewById(R.id.switchDarkTheme)
         switchHapticTap = findViewById(R.id.switchHapticTap)
         switchSnapToEdge = findViewById(R.id.switchSnapToEdge)
         switchDoubleTapMute = findViewById(R.id.switchDoubleTapMute)
+        switchHoldRepeat = findViewById(R.id.switchHoldRepeat)
         switchAutoBoot = findViewById(R.id.switchAutoBoot)
         switchLockPosition = findViewById(R.id.switchLockPosition)
         switchRotateToast = findViewById(R.id.switchRotateToast)
 
         radioGroupStream = findViewById(R.id.radioGroupStream)
         radioGroupShape = findViewById(R.id.radioGroupShape)
+        radioGroupAutoDim = findViewById(R.id.radioGroupAutoDim)
         seekBarWidth = findViewById(R.id.seekBarWidth)
         seekBarHeight = findViewById(R.id.seekBarHeight)
         seekBarTransparency = findViewById(R.id.seekBarTransparency)
+        seekBarDimOpacity = findViewById(R.id.seekBarDimOpacity)
         tvWidthValue = findViewById(R.id.tvWidthValue)
         tvHeightValue = findViewById(R.id.tvHeightValue)
         tvTransparencyValue = findViewById(R.id.tvTransparencyValue)
+        tvDimOpacityValue = findViewById(R.id.tvDimOpacityValue)
 
         viewColorPreview = findViewById(R.id.viewColorPreview)
         tvColorHex = findViewById(R.id.tvColorHex)
@@ -198,11 +214,13 @@ class MainActivity : AppCompatActivity() {
         switchHapticTap.isChecked =
             prefs.getBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, true)
         switchSnapToEdge.isChecked =
-            prefs.getBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, true)
+            prefs.getBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, false)
         switchDoubleTapMute.isChecked =
-            prefs.getBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, true)
+            prefs.getBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, false)
+        switchHoldRepeat.isChecked =
+            prefs.getBoolean(FloatingVolumeService.KEY_HOLD_TO_REPEAT, true)
         switchAutoBoot.isChecked =
-            prefs.getBoolean(FloatingVolumeService.KEY_AUTO_BOOT, true)
+            prefs.getBoolean(FloatingVolumeService.KEY_AUTO_BOOT, false)
         switchLockPosition.isChecked =
             prefs.getBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, false)
         switchRotateToast.isChecked =
@@ -220,6 +238,26 @@ class MainActivity : AppCompatActivity() {
                 else -> R.id.radioStreamMusic
             }
         )
+
+        val dimSeconds = prefs.getInt(
+            FloatingVolumeService.KEY_AUTO_DIM_SEC,
+            FloatingVolumeService.DEFAULT_AUTO_DIM_SEC
+        )
+        radioGroupAutoDim.check(
+            when (dimSeconds) {
+                3 -> R.id.radioDim3s
+                5 -> R.id.radioDim5s
+                10 -> R.id.radioDim10s
+                else -> R.id.radioDimOff
+            }
+        )
+
+        val dimOpacity = prefs.getInt(
+            FloatingVolumeService.KEY_DIM_OPACITY_PCT,
+            FloatingVolumeService.DEFAULT_DIM_OPACITY_PCT
+        ).coerceIn(0, 50)
+        seekBarDimOpacity.progress = dimOpacity
+        tvDimOpacityValue.text = "$dimOpacity%"
 
         val widthDp = prefs.getInt(
             FloatingVolumeService.KEY_WIDTH_DP,
@@ -293,8 +331,54 @@ class MainActivity : AppCompatActivity() {
             refreshSavedPositionsText()
         }
 
+        btnPresetGaming.setOnClickListener {
+            applyPresetProfile(
+                name = "Gaming",
+                widthDp = 44,
+                heightDp = 96,
+                transparencyPct = 55,
+                shape = FloatingVolumeService.SHAPE_LINE,
+                colorHex = "#06B6D4",
+                snapToEdge = true,
+                autoDimSec = 5,
+                dimOpacity = 15
+            )
+        }
+
+        btnPresetBedtime.setOnClickListener {
+            applyPresetProfile(
+                name = "Bedtime",
+                widthDp = 52,
+                heightDp = 112,
+                transparencyPct = 28,
+                shape = FloatingVolumeService.SHAPE_CIRCLE,
+                colorHex = "#10B981",
+                snapToEdge = true,
+                autoDimSec = 3,
+                dimOpacity = 5
+            )
+        }
+
+        btnPresetStealth.setOnClickListener {
+            applyPresetProfile(
+                name = "Stealth",
+                widthDp = 58,
+                heightDp = 124,
+                transparencyPct = 0,
+                shape = FloatingVolumeService.SHAPE_LINE,
+                colorHex = "#2563EB",
+                snapToEdge = true,
+                autoDimSec = 0,
+                dimOpacity = 0
+            )
+        }
+
         switchDoubleTapMute.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, isChecked).apply()
+        }
+
+        switchHoldRepeat.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_HOLD_TO_REPEAT, isChecked).apply()
         }
 
         switchAutoBoot.setOnCheckedChangeListener { _, isChecked ->
@@ -318,6 +402,28 @@ class MainActivity : AppCompatActivity() {
             }
             prefs.edit().putString(FloatingVolumeService.KEY_AUDIO_STREAM, stream).apply()
         }
+
+        radioGroupAutoDim.setOnCheckedChangeListener { _, checkedId ->
+            val seconds = when (checkedId) {
+                R.id.radioDim3s -> 3
+                R.id.radioDim5s -> 5
+                R.id.radioDim10s -> 10
+                else -> 0
+            }
+            prefs.edit().putInt(FloatingVolumeService.KEY_AUTO_DIM_SEC, seconds).apply()
+        }
+
+        seekBarDimOpacity.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                tvDimOpacityValue.text = "$progress%"
+                if (fromUser) {
+                    prefs.edit().putInt(FloatingVolumeService.KEY_DIM_OPACITY_PCT, progress).apply()
+                }
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+        })
 
         btnOverlayPermission.setOnClickListener {
             requestOverlayPermissionIfNeeded()
@@ -470,6 +576,34 @@ class MainActivity : AppCompatActivity() {
                 ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             }
         }
+    }
+
+    private fun applyPresetProfile(
+        name: String,
+        widthDp: Int,
+        heightDp: Int,
+        transparencyPct: Int,
+        shape: String,
+        colorHex: String,
+        snapToEdge: Boolean,
+        autoDimSec: Int,
+        dimOpacity: Int
+    ) {
+        prefs.edit()
+            .putInt(FloatingVolumeService.KEY_WIDTH_DP, widthDp)
+            .putInt(FloatingVolumeService.KEY_HEIGHT_DP, heightDp)
+            .putInt(FloatingVolumeService.KEY_TRANSPARENCY_PCT, transparencyPct)
+            .putString(FloatingVolumeService.KEY_SHAPE, shape)
+            .putInt(FloatingVolumeService.KEY_OVERLAY_COLOR, Color.parseColor(colorHex))
+            .putString(FloatingVolumeService.KEY_AUDIO_STREAM, FloatingVolumeService.STREAM_MUSIC)
+            .putBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, true)
+            .putBoolean(FloatingVolumeService.KEY_HOLD_TO_REPEAT, true)
+            .putBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, snapToEdge)
+            .putInt(FloatingVolumeService.KEY_AUTO_DIM_SEC, autoDimSec)
+            .putInt(FloatingVolumeService.KEY_DIM_OPACITY_PCT, dimOpacity)
+            .apply()
+        loadSavedSettingsIntoViews()
+        Toast.makeText(this, "Applied $name preset", Toast.LENGTH_SHORT).show()
     }
 
     private fun saveOverlayColor(colorInt: Int) {

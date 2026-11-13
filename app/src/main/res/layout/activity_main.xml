@@ -22,7 +22,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Floating Volume Control"
+                android:text="@string/app_name"
                 android:textColor="@color/text_primary"
                 android:textSize="22sp"
                 android:textStyle="bold" />
@@ -69,6 +69,55 @@
             android:layout_marginTop="4dp"
             android:text="Stop Floating Service"
             android:textColor="#EF4444" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="20dp"
+            android:background="@color/divider_line" />
+
+        <!-- Quick Profile Presets -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Quick Profile Presets"
+            android:textColor="@color/text_primary"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnPresetGaming"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:text="Gaming"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnPresetBedtime"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:text="Bedtime"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnPresetStealth"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Stealth"
+                android:textSize="12sp" />
+        </LinearLayout>
 
         <View
             android:layout_width="match_parent"
@@ -269,6 +318,91 @@
             android:max="100"
             android:progress="82" />
 
+        <!-- Idle Auto-Dim Controls -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Auto-Dim When Idle"
+            android:textColor="@color/text_primary"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <RadioGroup
+            android:id="@+id/radioGroupAutoDim"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/radioDimOff"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:checked="true"
+                android:text="Off"
+                android:textColor="@color/text_primary" />
+
+            <RadioButton
+                android:id="@+id/radioDim3s"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:checked="false"
+                android:text="3s"
+                android:textColor="@color/text_primary" />
+
+            <RadioButton
+                android:id="@+id/radioDim5s"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:checked="false"
+                android:text="5s"
+                android:textColor="@color/text_primary" />
+
+            <RadioButton
+                android:id="@+id/radioDim10s"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:checked="false"
+                android:text="10s"
+                android:textColor="@color/text_primary" />
+        </RadioGroup>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Dimmed Opacity (0 - 50%)"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/tvDimOpacityValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="15%"
+                android:textColor="@color/text_secondary"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <SeekBar
+            android:id="@+id/seekBarDimOpacity"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:max="50"
+            android:progress="15" />
+
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
@@ -416,7 +550,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:checked="true"
+            android:checked="false"
             android:text="Snap to Left/Right Screen Edge After Drag"
             android:textColor="@color/text_primary" />
 
@@ -425,8 +559,17 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:checked="true"
+            android:checked="false"
             android:text="Double-Tap Icon to Mute / Unmute"
+            android:textColor="@color/text_primary" />
+
+        <Switch
+            android:id="@+id/switchHoldRepeat"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:checked="true"
+            android:text="Hold Top/Bottom to Repeat Volume (When Locked)"
             android:textColor="@color/text_primary" />
 
         <Switch
@@ -434,7 +577,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:checked="true"
+            android:checked="false"
             android:text="Auto-Start Service After Phone Reboot"
             android:textColor="@color/text_primary" />
 
@@ -486,7 +629,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="Portrait: (272, 184)  |  Landscape: (48, 74)"
+            android:text="Portrait: (248, 184)  |  Landscape: (48, 74)"
             android:textColor="@color/text_secondary"
             android:textSize="12sp" />
 
