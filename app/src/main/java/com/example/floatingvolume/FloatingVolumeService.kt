@@ -28,11 +28,18 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.WindowInsets
 import android.view.WindowManager
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.SeekBar
+import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceChangeListener {
 
@@ -43,15 +50,20 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     private lateinit var prefs: SharedPreferences
 
     private var floatingView: View? = null
+    private var fullscreenSentinelView: View? = null
+    private var miniSliderView: LinearLayout? = null
     private lateinit var layoutParams: WindowManager.LayoutParams
     private val overlayDrawable = GradientDrawable()
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var isDragging = false
+    private var isScrubbing = false
     private var repeatActive = false
     private var repeatUpperHalf = true
     private var isIdleDimmed = false
+    private var isFullscreenHidden = false
     private var touchSlop = 0
+    private var scrubAccumY = 0f
     private var lastAppliedLandscape: Boolean? = null
 
     private var pendingSingleTapRunnable: Runnable? = null
@@ -63,7 +75,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     private var initialTouchY = 0f
 
     private val longPressRunnable = Runnable {
-        if (isPositionLocked()) return@Runnable
+        if (isPositionLocked() || isScrubbing) return@Runnable
         isDragging = true
         floatingView?.apply {
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -76,7 +88,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             if (!repeatActive) return
             val view = floatingView ?: return
             triggerHapticIfEnabled(view)
-            adjustVolume(if (repeatUpperHalf) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER)
+            adjustVolumeByStep(if (repeatUpperHalf) 1 else -1)
             mainHandler.postDelayed(this, REPEAT_INTERVAL_MS)
         }
     }
@@ -86,7 +98,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         if (!isPositionLocked() || !prefs.getBoolean(KEY_HOLD_TO_REPEAT, true)) return@Runnable
         repeatActive = true
         triggerHapticIfEnabled(view)
-        adjustVolume(if (repeatUpperHalf) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER)
+        adjustVolumeByStep(if (repeatUpperHalf) 1 else -1)
         mainHandler.postDelayed(repeatVolumeRunnable, REPEAT_INTERVAL_MS)
     }
 
@@ -94,6 +106,10 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         if (prefs.getInt(KEY_AUTO_DIM_SEC, DEFAULT_AUTO_DIM_SEC) <= 0) return@Runnable
         isIdleDimmed = true
         applyAppearanceFromPrefs()
+    }
+
+    private val dismissSliderRunnable = Runnable {
+        dismissMiniSlider()
     }
 
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -119,6 +135,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         requestTileRefresh()
 
         startAsForegroundService()
+        createFullscreenSentinel()
         createFloatingOverlay()
         scheduleAutoDim()
 
@@ -130,15 +147,19 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         when (intent?.action) {
             ACTION_VOL_UP -> {
                 wakeFromIdleAndScheduleDim()
-                adjustVolume(AudioManager.ADJUST_RAISE)
+                adjustVolumeByStep(1)
             }
             ACTION_VOL_DOWN -> {
                 wakeFromIdleAndScheduleDim()
-                adjustVolume(AudioManager.ADJUST_LOWER)
+                adjustVolumeByStep(-1)
             }
             ACTION_TOGGLE_MUTE -> {
                 wakeFromIdleAndScheduleDim()
-                adjustVolume(AudioManager.ADJUST_TOGGLE_MUTE)
+                audioManager.adjustStreamVolume(
+                    getSelectedAudioStream(),
+                    AudioManager.ADJUST_TOGGLE_MUTE,
+                    AudioManager.FLAG_SHOW_UI
+                )
             }
             ACTION_TOGGLE_LOCK -> {
                 val nextLocked = !isPositionLocked()
@@ -160,6 +181,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         mainHandler.removeCallbacks(startRepeatRunnable)
         mainHandler.removeCallbacks(repeatVolumeRunnable)
         mainHandler.removeCallbacks(autoDimRunnable)
+        mainHandler.removeCallbacks(dismissSliderRunnable)
         pendingSingleTapRunnable?.let { mainHandler.removeCallbacks(it) }
         displayManager.unregisterDisplayListener(displayListener)
         prefs.unregisterOnSharedPreferenceChangeListener(this)
@@ -167,6 +189,11 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         prefs.edit().putBoolean(KEY_IS_SERVICE_RUNNING, false).apply()
         requestTileRefresh()
 
+        dismissMiniSlider()
+        fullscreenSentinelView?.let { view ->
+            if (view.isAttachedToWindow) windowManager.removeView(view)
+        }
+        fullscreenSentinelView = null
         floatingView?.let { view ->
             if (view.isAttachedToWindow) {
                 windowManager.removeView(view)
@@ -182,6 +209,11 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             }
             KEY_AUTO_DIM_SEC, KEY_DIM_OPACITY_PCT -> {
                 wakeFromIdleAndScheduleDim()
+            }
+            KEY_HIDE_FULLSCREEN -> {
+                if (!prefs.getBoolean(KEY_HIDE_FULLSCREEN, false)) {
+                    applyFullscreenState(false)
+                }
             }
             KEY_POSITION_LOCKED -> {
                 refreshForegroundNotification()
@@ -349,6 +381,52 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             .build()
     }
 
+    private fun createFullscreenSentinel() {
+        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        val sentinel = View(this)
+        val lp = WindowManager.LayoutParams(
+            0,
+            0,
+            overlayType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            sentinel.setOnApplyWindowInsetsListener { _, insets ->
+                val statusHidden = !insets.isVisible(WindowInsets.Type.statusBars())
+                applyFullscreenState(statusHidden)
+                insets
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            sentinel.setOnSystemUiVisibilityChangeListener { visibility ->
+                val statusHidden = (visibility and View.SYSTEM_UI_FLAG_FULLSCREEN) != 0
+                applyFullscreenState(statusHidden)
+            }
+        }
+
+        fullscreenSentinelView = sentinel
+        windowManager.addView(sentinel, lp)
+    }
+
+    private fun applyFullscreenState(fullscreenDetected: Boolean) {
+        val shouldHide = fullscreenDetected && prefs.getBoolean(KEY_HIDE_FULLSCREEN, false)
+        if (isFullscreenHidden == shouldHide) return
+        isFullscreenHidden = shouldHide
+        floatingView?.visibility = if (shouldHide) View.GONE else View.VISIBLE
+        if (shouldHide) {
+            dismissMiniSlider()
+        }
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private fun createFloatingOverlay() {
         val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -381,12 +459,17 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             background = overlayDrawable
         }
 
+        val scrubStepPx = dpToPx(18).toFloat()
+        val inwardFlickPx = dpToPx(28).toFloat()
+
         view.setOnTouchListener { v, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     wakeFromIdleAndScheduleDim()
                     isDragging = false
+                    isScrubbing = false
                     repeatActive = false
+                    scrubAccumY = 0f
                     repeatUpperHalf = event.y < v.height / 2f
                     initialX = layoutParams.x
                     initialY = layoutParams.y
@@ -410,6 +493,20 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                             mainHandler.removeCallbacks(longPressRunnable)
                             mainHandler.removeCallbacks(startRepeatRunnable)
                             mainHandler.removeCallbacks(repeatVolumeRunnable)
+
+                            if (prefs.getBoolean(KEY_SWIPE_SCRUB, true) && abs(dy) >= abs(dx)) {
+                                if (!isScrubbing) {
+                                    isScrubbing = true
+                                    scrubAccumY = 0f
+                                }
+                                val deltaY = dy - scrubAccumY
+                                if (abs(deltaY) >= scrubStepPx) {
+                                    val steps = (deltaY / scrubStepPx).toInt()
+                                    scrubAccumY += steps * scrubStepPx
+                                    triggerHapticIfEnabled(v)
+                                    adjustVolumeByDelta(-steps)
+                                }
+                            }
                         }
                     } else if (!isPositionLocked()) {
                         val (clampedX, clampedY) = clampCoordinates(
@@ -429,8 +526,12 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                     mainHandler.removeCallbacks(repeatVolumeRunnable)
                     scheduleAutoDim()
 
-                    if (repeatActive) {
+                    val dx = event.rawX - initialTouchX
+                    val dy = event.rawY - initialTouchY
+
+                    if (repeatActive || isScrubbing) {
                         repeatActive = false
+                        isScrubbing = false
                     } else if (isDragging) {
                         isDragging = false
                         v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
@@ -439,13 +540,12 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                         } else {
                             savePositionForCurrentOrientation(layoutParams.x, layoutParams.y)
                         }
-                    } else {
-                        val dx = event.rawX - initialTouchX
-                        val dy = event.rawY - initialTouchY
-                        if (hypot(dx.toDouble(), dy.toDouble()) <= touchSlop) {
-                            handleOverlayTap(v, event.y < v.height / 2f)
-                            v.performClick()
-                        }
+                    } else if (abs(dx) >= inwardFlickPx && abs(dx) > abs(dy)) {
+                        triggerHapticIfEnabled(v)
+                        toggleMiniSlider()
+                    } else if (hypot(dx.toDouble(), dy.toDouble()) <= touchSlop) {
+                        handleOverlayTap(v, event.y < v.height / 2f)
+                        v.performClick()
                     }
                     true
                 }
@@ -455,6 +555,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                     mainHandler.removeCallbacks(startRepeatRunnable)
                     mainHandler.removeCallbacks(repeatVolumeRunnable)
                     repeatActive = false
+                    isScrubbing = false
                     scheduleAutoDim()
                     if (isDragging) {
                         isDragging = false
@@ -478,12 +579,19 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     }
 
     private fun handleOverlayTap(view: View, isUpperHalf: Boolean) {
+        val popoutMode = prefs.getString(KEY_POPOUT_MODE, POPOUT_SWIPE_INWARD)
+        if (popoutMode == POPOUT_SINGLE_TAP) {
+            triggerHapticIfEnabled(view)
+            toggleMiniSlider()
+            return
+        }
+
         val doubleTapMuteEnabled = prefs.getBoolean(KEY_DOUBLE_TAP_MUTE, false)
-        val direction = if (isUpperHalf) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
+        val stepDir = if (isUpperHalf) 1 else -1
 
         if (!doubleTapMuteEnabled) {
             triggerHapticIfEnabled(view)
-            adjustVolume(direction)
+            adjustVolumeByStep(stepDir)
             return
         }
 
@@ -493,17 +601,165 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             pendingSingleTapRunnable = null
             lastTapTimeMs = 0L
             triggerHapticIfEnabled(view)
-            adjustVolume(AudioManager.ADJUST_TOGGLE_MUTE)
+            audioManager.adjustStreamVolume(
+                getSelectedAudioStream(),
+                AudioManager.ADJUST_TOGGLE_MUTE,
+                AudioManager.FLAG_SHOW_UI
+            )
         } else {
             lastTapTimeMs = now
             val runnable = Runnable {
                 triggerHapticIfEnabled(view)
-                adjustVolume(direction)
+                adjustVolumeByStep(stepDir)
                 pendingSingleTapRunnable = null
             }
             pendingSingleTapRunnable = runnable
             mainHandler.postDelayed(runnable, DOUBLE_TAP_TIMEOUT_MS)
         }
+    }
+
+    private fun toggleMiniSlider() {
+        if (miniSliderView != null) {
+            dismissMiniSlider()
+        } else {
+            showMiniSlider()
+        }
+    }
+
+    private fun showMiniSlider() {
+        dismissMiniSlider()
+        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        val stream = getSelectedAudioStream()
+        val maxVol = audioManager.getStreamMaxVolume(stream).coerceAtLeast(1)
+        val maxAllowed = getMaxAllowedVolume(stream)
+        val currentVol = audioManager.getStreamVolume(stream).coerceIn(0, maxAllowed)
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = dpToPx(12)
+            setPadding(pad, pad, pad, pad)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#EE0F172A"))
+                cornerRadius = dpToPx(16).toFloat()
+                setStroke(dpToPx(1), Color.parseColor("#475569"))
+            }
+        }
+
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val titleTv = TextView(this).apply {
+            text = "VOL $currentVol/$maxVol (Cap $maxAllowed)"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+        }
+        headerRow.addView(titleTv, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+
+        val closeBtn = Button(this).apply {
+            text = "X"
+            textSize = 11f
+            setOnClickListener { dismissMiniSlider() }
+        }
+        headerRow.addView(closeBtn, LinearLayout.LayoutParams(dpToPx(42), dpToPx(34)))
+        panel.addView(headerRow)
+
+        val seekBar = SeekBar(this).apply {
+            max = maxAllowed
+            progress = currentVol
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        setVolumeClamped(progress)
+                        titleTv.text = "VOL $progress/$maxVol (Cap $maxAllowed)"
+                        resetMiniSliderTimeout()
+                    }
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) = resetMiniSliderTimeout()
+                override fun onStopTrackingTouch(sb: SeekBar?) = resetMiniSliderTimeout()
+            })
+        }
+        panel.addView(seekBar, LinearLayout.LayoutParams(dpToPx(188), LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        val actionRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val btnDown = Button(this).apply {
+            text = "-"
+            setOnClickListener {
+                adjustVolumeByStep(-1)
+                val updated = audioManager.getStreamVolume(stream).coerceIn(0, maxAllowed)
+                seekBar.progress = updated
+                titleTv.text = "VOL $updated/$maxVol (Cap $maxAllowed)"
+                resetMiniSliderTimeout()
+            }
+        }
+        val btnMute = Button(this).apply {
+            text = "Mute"
+            setOnClickListener {
+                audioManager.adjustStreamVolume(stream, AudioManager.ADJUST_TOGGLE_MUTE, AudioManager.FLAG_SHOW_UI)
+                resetMiniSliderTimeout()
+            }
+        }
+        val btnUp = Button(this).apply {
+            text = "+"
+            setOnClickListener {
+                adjustVolumeByStep(1)
+                val updated = audioManager.getStreamVolume(stream).coerceIn(0, maxAllowed)
+                seekBar.progress = updated
+                titleTv.text = "VOL $updated/$maxVol (Cap $maxAllowed)"
+                resetMiniSliderTimeout()
+            }
+        }
+        val btnLp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        actionRow.addView(btnDown, btnLp)
+        actionRow.addView(btnMute, btnLp)
+        actionRow.addView(btnUp, btnLp)
+        panel.addView(actionRow)
+
+        val (screenW, screenH) = getScreenDimensionsPx()
+        val sliderWidth = dpToPx(212)
+        val targetX = if (layoutParams.x > screenW / 2) {
+            (layoutParams.x - sliderWidth - dpToPx(10)).coerceAtLeast(dpToPx(8))
+        } else {
+            (layoutParams.x + layoutParams.width + dpToPx(10)).coerceAtMost((screenW - sliderWidth - dpToPx(8)).coerceAtLeast(0))
+        }
+        val targetY = layoutParams.y.coerceIn(dpToPx(24), (screenH - dpToPx(160)).coerceAtLeast(dpToPx(24)))
+
+        val sliderLp = WindowManager.LayoutParams(
+            sliderWidth,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = targetX
+            y = targetY
+        }
+
+        miniSliderView = panel
+        windowManager.addView(panel, sliderLp)
+        resetMiniSliderTimeout()
+    }
+
+    private fun resetMiniSliderTimeout() {
+        mainHandler.removeCallbacks(dismissSliderRunnable)
+        mainHandler.postDelayed(dismissSliderRunnable, 3500L)
+    }
+
+    private fun dismissMiniSlider() {
+        mainHandler.removeCallbacks(dismissSliderRunnable)
+        miniSliderView?.let { view ->
+            if (view.isAttachedToWindow) {
+                windowManager.removeView(view)
+            }
+        }
+        miniSliderView = null
     }
 
     private fun triggerHapticIfEnabled(view: View) {
@@ -519,6 +775,31 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             STREAM_VOICE -> AudioManager.STREAM_VOICE_CALL
             else -> AudioManager.STREAM_MUSIC
         }
+    }
+
+    private fun getMaxAllowedVolume(stream: Int): Int {
+        val maxVol = audioManager.getStreamMaxVolume(stream).coerceAtLeast(1)
+        val limitPct = prefs.getInt(KEY_MAX_VOLUME_LIMIT_PCT, DEFAULT_MAX_VOLUME_LIMIT_PCT).coerceIn(30, 100)
+        return ((maxVol * limitPct) / 100f).roundToInt().coerceIn(1, maxVol)
+    }
+
+    private fun adjustVolumeByStep(stepSign: Int) {
+        val stepSize = prefs.getInt(KEY_VOLUME_STEP, DEFAULT_VOLUME_STEP).coerceAtLeast(1)
+        adjustVolumeByDelta(stepSign * stepSize)
+    }
+
+    private fun adjustVolumeByDelta(delta: Int) {
+        if (delta == 0) return
+        val stream = getSelectedAudioStream()
+        val current = audioManager.getStreamVolume(stream)
+        setVolumeClamped(current + delta)
+    }
+
+    private fun setVolumeClamped(target: Int) {
+        val stream = getSelectedAudioStream()
+        val maxAllowed = getMaxAllowedVolume(stream)
+        val clamped = target.coerceIn(0, maxAllowed)
+        audioManager.setStreamVolume(stream, clamped, AudioManager.FLAG_SHOW_UI)
     }
 
     private fun wakeFromIdleAndScheduleDim() {
@@ -581,14 +862,6 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         if (addIfMissing && view.isAttachedToWindow) {
             windowManager.updateViewLayout(view, layoutParams)
         }
-    }
-
-    private fun adjustVolume(direction: Int) {
-        audioManager.adjustStreamVolume(
-            getSelectedAudioStream(),
-            direction,
-            AudioManager.FLAG_SHOW_UI
-        )
     }
 
     private fun savePositionForCurrentOrientation(x: Int, y: Int) {
@@ -654,6 +927,12 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val KEY_ROTATE_TOAST = "rotate_toast"
 
         const val KEY_AUDIO_STREAM = "audio_stream"
+        const val KEY_VOLUME_STEP = "volume_step"
+        const val KEY_MAX_VOLUME_LIMIT_PCT = "max_volume_limit_pct"
+        const val KEY_SWIPE_SCRUB = "swipe_scrub"
+        const val KEY_POPOUT_MODE = "popout_slider_mode"
+        const val KEY_HIDE_FULLSCREEN = "hide_in_fullscreen"
+
         const val KEY_HAPTIC_TAP = "haptic_tap"
         const val KEY_SNAP_TO_EDGE = "snap_to_edge"
         const val KEY_DOUBLE_TAP_MUTE = "double_tap_mute"
@@ -671,18 +950,23 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val SHAPE_CIRCLE = "circle"
         const val SHAPE_LINE = "line"
 
+        const val POPOUT_SWIPE_INWARD = "swipe_inward"
+        const val POPOUT_SINGLE_TAP = "single_tap"
+
         const val STREAM_MUSIC = "music"
         const val STREAM_RING = "ring"
         const val STREAM_ALARM = "alarm"
         const val STREAM_VOICE = "voice"
         const val DEFAULT_STREAM = "music"
 
-        const val DEFAULT_WIDTH_DP = 56
-        const val DEFAULT_HEIGHT_DP = 112
-        const val DEFAULT_TRANSPARENCY_PCT = 82
-        const val DEFAULT_AUTO_DIM_SEC = 0
+        const val DEFAULT_WIDTH_DP = 44
+        const val DEFAULT_HEIGHT_DP = 152
+        const val DEFAULT_TRANSPARENCY_PCT = 55
+        const val DEFAULT_AUTO_DIM_SEC = 5
         const val DEFAULT_DIM_OPACITY_PCT = 15
-        val DEFAULT_COLOR = 0xFF2563EB.toInt()
+        const val DEFAULT_VOLUME_STEP = 1
+        const val DEFAULT_MAX_VOLUME_LIMIT_PCT = 100
+        val DEFAULT_COLOR = 0xFF06B6D4.toInt()
 
         const val ACTION_VOL_UP = "com.example.floatingvolume.ACTION_VOL_UP"
         const val ACTION_VOL_DOWN = "com.example.floatingvolume.ACTION_VOL_DOWN"

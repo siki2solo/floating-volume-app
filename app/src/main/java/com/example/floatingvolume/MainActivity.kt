@@ -2,6 +2,7 @@ package com.example.floatingvolume
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -13,19 +14,25 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.RadioGroup
 import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlin.math.max
 import kotlin.math.min
 
@@ -33,15 +40,29 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: SharedPreferences
     private lateinit var tvPermissionStatus: TextView
+    private lateinit var tvAutostartStatus: TextView
     private lateinit var btnOverlayPermission: Button
+    private lateinit var btnAutostartPermission: Button
     private lateinit var btnStartService: Button
     private lateinit var btnStopService: Button
-    private lateinit var btnPresetGaming: Button
-    private lateinit var btnPresetBedtime: Button
-    private lateinit var btnPresetStealth: Button
+
+    private lateinit var presetContainer: LinearLayout
+    private lateinit var btnNewPreset: Button
+    private lateinit var btnResetPresets: Button
+    private lateinit var btnExportBackup: Button
+    private lateinit var btnImportBackup: Button
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private lateinit var switchDarkTheme: Switch
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchSwipeScrub: Switch
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchSingleTapSlider: Switch
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchHideFullscreen: Switch
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private lateinit var switchHapticTap: Switch
@@ -65,8 +86,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var switchRotateToast: Switch
 
     private lateinit var radioGroupStream: RadioGroup
+    private lateinit var radioGroupStepSize: RadioGroup
     private lateinit var radioGroupShape: RadioGroup
     private lateinit var radioGroupAutoDim: RadioGroup
+    private lateinit var seekBarMaxLimit: SeekBar
+    private lateinit var tvMaxLimitValue: TextView
     private lateinit var seekBarWidth: SeekBar
     private lateinit var seekBarHeight: SeekBar
     private lateinit var seekBarTransparency: SeekBar
@@ -96,6 +120,7 @@ class MainActivity : AppCompatActivity() {
 
     private var updatingColorSliders = false
     private var updatingPositionSliders = false
+    private var syncingViews = false
 
     private val overlayPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -106,10 +131,32 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val autostartPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        updatePermissionUi()
+    }
+
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {
         launchFloatingService()
+    }
+
+    private val exportBackupLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            writeBackupToUri(uri)
+        }
+    }
+
+    private val importBackupLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            readBackupFromUri(uri)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -124,6 +171,7 @@ class MainActivity : AppCompatActivity() {
 
         bindViews()
         ensureDefaultPositionsExist()
+        ensurePresetsExist()
         loadSavedSettingsIntoViews()
         setupListeners()
         updatePermissionUi()
@@ -144,14 +192,22 @@ class MainActivity : AppCompatActivity() {
 
     private fun bindViews() {
         tvPermissionStatus = findViewById(R.id.tvPermissionStatus)
+        tvAutostartStatus = findViewById(R.id.tvAutostartStatus)
         btnOverlayPermission = findViewById(R.id.btnOverlayPermission)
+        btnAutostartPermission = findViewById(R.id.btnAutostartPermission)
         btnStartService = findViewById(R.id.btnStartService)
         btnStopService = findViewById(R.id.btnStopService)
-        btnPresetGaming = findViewById(R.id.btnPresetGaming)
-        btnPresetBedtime = findViewById(R.id.btnPresetBedtime)
-        btnPresetStealth = findViewById(R.id.btnPresetStealth)
+
+        presetContainer = findViewById(R.id.presetContainer)
+        btnNewPreset = findViewById(R.id.btnNewPreset)
+        btnResetPresets = findViewById(R.id.btnResetPresets)
+        btnExportBackup = findViewById(R.id.btnExportBackup)
+        btnImportBackup = findViewById(R.id.btnImportBackup)
 
         switchDarkTheme = findViewById(R.id.switchDarkTheme)
+        switchSwipeScrub = findViewById(R.id.switchSwipeScrub)
+        switchSingleTapSlider = findViewById(R.id.switchSingleTapSlider)
+        switchHideFullscreen = findViewById(R.id.switchHideFullscreen)
         switchHapticTap = findViewById(R.id.switchHapticTap)
         switchSnapToEdge = findViewById(R.id.switchSnapToEdge)
         switchDoubleTapMute = findViewById(R.id.switchDoubleTapMute)
@@ -161,8 +217,11 @@ class MainActivity : AppCompatActivity() {
         switchRotateToast = findViewById(R.id.switchRotateToast)
 
         radioGroupStream = findViewById(R.id.radioGroupStream)
+        radioGroupStepSize = findViewById(R.id.radioGroupStepSize)
         radioGroupShape = findViewById(R.id.radioGroupShape)
         radioGroupAutoDim = findViewById(R.id.radioGroupAutoDim)
+        seekBarMaxLimit = findViewById(R.id.seekBarMaxLimit)
+        tvMaxLimitValue = findViewById(R.id.tvMaxLimitValue)
         seekBarWidth = findViewById(R.id.seekBarWidth)
         seekBarHeight = findViewById(R.id.seekBarHeight)
         seekBarTransparency = findViewById(R.id.seekBarTransparency)
@@ -209,12 +268,294 @@ class MainActivity : AppCompatActivity() {
         if (changed) editor.apply()
     }
 
+    private fun buildDefaultPresetsArray(): JSONArray {
+        return JSONArray().apply {
+            put(buildPresetJson(
+                id = "gaming",
+                name = "Gaming",
+                widthDp = 44,
+                heightDp = 96,
+                transparencyPct = 55,
+                shape = "line",
+                colorHex = "#06B6D4",
+                audioStream = "music",
+                hapticTap = true,
+                snapToEdge = true,
+                doubleTapMute = false,
+                holdToRepeat = true,
+                autoDimSec = 5,
+                dimOpacityPct = 15,
+                volumeStep = 1,
+                maxVolumeLimitPct = 100,
+                swipeScrub = true,
+                popoutMode = "swipe_inward",
+                hideInFullscreen = false
+            ))
+            put(buildPresetJson(
+                id = "bedtime",
+                name = "Bedtime",
+                widthDp = 52,
+                heightDp = 112,
+                transparencyPct = 28,
+                shape = "circle",
+                colorHex = "#10B981",
+                audioStream = "music",
+                hapticTap = true,
+                snapToEdge = true,
+                doubleTapMute = true,
+                holdToRepeat = true,
+                autoDimSec = 3,
+                dimOpacityPct = 5,
+                volumeStep = 1,
+                maxVolumeLimitPct = 60,
+                swipeScrub = true,
+                popoutMode = "swipe_inward",
+                hideInFullscreen = false
+            ))
+            put(buildPresetJson(
+                id = "stealth",
+                name = "Stealth",
+                widthDp = 58,
+                heightDp = 124,
+                transparencyPct = 0,
+                shape = "line",
+                colorHex = "#2563EB",
+                audioStream = "music",
+                hapticTap = true,
+                snapToEdge = true,
+                doubleTapMute = false,
+                holdToRepeat = true,
+                autoDimSec = 0,
+                dimOpacityPct = 0,
+                volumeStep = 1,
+                maxVolumeLimitPct = 100,
+                swipeScrub = true,
+                popoutMode = "swipe_inward",
+                hideInFullscreen = true
+            ))
+        }
+    }
+
+    private fun buildPresetJson(
+        id: String,
+        name: String,
+        widthDp: Int,
+        heightDp: Int,
+        transparencyPct: Int,
+        shape: String,
+        colorHex: String,
+        audioStream: String,
+        hapticTap: Boolean,
+        snapToEdge: Boolean,
+        doubleTapMute: Boolean,
+        holdToRepeat: Boolean,
+        autoDimSec: Int,
+        dimOpacityPct: Int,
+        volumeStep: Int,
+        maxVolumeLimitPct: Int,
+        swipeScrub: Boolean,
+        popoutMode: String,
+        hideInFullscreen: Boolean
+    ): JSONObject {
+        return JSONObject().apply {
+            put("id", id)
+            put("name", name)
+            put("widthDp", widthDp)
+            put("heightDp", heightDp)
+            put("transparencyPct", transparencyPct)
+            put("shape", shape)
+            put("colorHex", colorHex)
+            put("audioStream", audioStream)
+            put("hapticTap", hapticTap)
+            put("snapToEdge", snapToEdge)
+            put("doubleTapMute", doubleTapMute)
+            put("holdToRepeat", holdToRepeat)
+            put("autoDimSeconds", autoDimSec)
+            put("dimOpacityPct", dimOpacityPct)
+            put("volumeStep", volumeStep)
+            put("maxVolumeLimitPct", maxVolumeLimitPct)
+            put("swipeScrub", swipeScrub)
+            put("popoutSliderMode", popoutMode)
+            put("hideInFullscreen", hideInFullscreen)
+        }
+    }
+
+    private fun ensurePresetsExist() {
+        if (!prefs.contains(KEY_PRESETS_JSON)) {
+            prefs.edit().putString(KEY_PRESETS_JSON, buildDefaultPresetsArray().toString()).apply()
+        }
+    }
+
+    private fun getSavedPresetsArray(): JSONArray {
+        val raw = prefs.getString(KEY_PRESETS_JSON, null)
+        return try {
+            if (raw.isNullOrBlank()) buildDefaultPresetsArray() else JSONArray(raw)
+        } catch (_: Exception) {
+            buildDefaultPresetsArray()
+        }
+    }
+
+    private fun savePresetsArray(arr: JSONArray) {
+        prefs.edit().putString(KEY_PRESETS_JSON, arr.toString()).apply()
+        renderPresetButtons()
+    }
+
+    private fun renderPresetButtons() {
+        presetContainer.removeAllViews()
+        val arr = getSavedPresetsArray()
+        val activeId = prefs.getString(KEY_ACTIVE_PRESET_ID, "")
+        val marginPx = (6 * resources.displayMetrics.density).toInt()
+
+        for (i in 0 until arr.length()) {
+            val presetObj = arr.optJSONObject(i) ?: continue
+            val id = presetObj.optString("id", "preset_$i")
+            val name = presetObj.optString("name", "Preset")
+            val btn = Button(this).apply {
+                text = if (id == activeId) "* $name" else name
+                textSize = 12f
+                isAllCaps = false
+                setOnClickListener {
+                    applyPresetObject(presetObj)
+                }
+                setOnLongClickListener {
+                    showPresetEditorDialog(i, presetObj)
+                    true
+                }
+            }
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginEnd = marginPx
+            }
+            presetContainer.addView(btn, lp)
+        }
+    }
+
+    private fun applyPresetObject(obj: JSONObject) {
+        val colorStr = obj.optString("colorHex", "#2563EB")
+        val parsedColor = try { Color.parseColor(colorStr) } catch (_: Exception) { FloatingVolumeService.DEFAULT_COLOR }
+
+        prefs.edit()
+            .putString(KEY_ACTIVE_PRESET_ID, obj.optString("id", ""))
+            .putInt(FloatingVolumeService.KEY_WIDTH_DP, obj.optInt("widthDp", FloatingVolumeService.DEFAULT_WIDTH_DP))
+            .putInt(FloatingVolumeService.KEY_HEIGHT_DP, obj.optInt("heightDp", FloatingVolumeService.DEFAULT_HEIGHT_DP))
+            .putInt(FloatingVolumeService.KEY_TRANSPARENCY_PCT, obj.optInt("transparencyPct", FloatingVolumeService.DEFAULT_TRANSPARENCY_PCT))
+            .putString(FloatingVolumeService.KEY_SHAPE, obj.optString("shape", FloatingVolumeService.SHAPE_CIRCLE))
+            .putInt(FloatingVolumeService.KEY_OVERLAY_COLOR, parsedColor)
+            .putString(FloatingVolumeService.KEY_AUDIO_STREAM, obj.optString("audioStream", FloatingVolumeService.STREAM_MUSIC))
+            .putBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, obj.optBoolean("hapticTap", true))
+            .putBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, obj.optBoolean("snapToEdge", false))
+            .putBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, obj.optBoolean("doubleTapMute", false))
+            .putBoolean(FloatingVolumeService.KEY_HOLD_TO_REPEAT, obj.optBoolean("holdToRepeat", true))
+            .putInt(FloatingVolumeService.KEY_AUTO_DIM_SEC, obj.optInt("autoDimSeconds", 0))
+            .putInt(FloatingVolumeService.KEY_DIM_OPACITY_PCT, obj.optInt("dimOpacityPct", 15))
+            .putInt(FloatingVolumeService.KEY_VOLUME_STEP, obj.optInt("volumeStep", 1))
+            .putInt(FloatingVolumeService.KEY_MAX_VOLUME_LIMIT_PCT, obj.optInt("maxVolumeLimitPct", 100))
+            .putBoolean(FloatingVolumeService.KEY_SWIPE_SCRUB, obj.optBoolean("swipeScrub", true))
+            .putString(FloatingVolumeService.KEY_POPOUT_MODE, obj.optString("popoutSliderMode", FloatingVolumeService.POPOUT_SWIPE_INWARD))
+            .putBoolean(FloatingVolumeService.KEY_HIDE_FULLSCREEN, obj.optBoolean("hideInFullscreen", false))
+            .apply()
+
+        loadSavedSettingsIntoViews()
+        Toast.makeText(this, "Applied ${obj.optString("name", "Preset")}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun captureCurrentSettingsAsPreset(id: String, name: String): JSONObject {
+        val colorInt = prefs.getInt(FloatingVolumeService.KEY_OVERLAY_COLOR, FloatingVolumeService.DEFAULT_COLOR)
+        val colorHex = String.format("#%06X", 0xFFFFFF and colorInt)
+        return buildPresetJson(
+            id = id,
+            name = name,
+            widthDp = prefs.getInt(FloatingVolumeService.KEY_WIDTH_DP, FloatingVolumeService.DEFAULT_WIDTH_DP),
+            heightDp = prefs.getInt(FloatingVolumeService.KEY_HEIGHT_DP, FloatingVolumeService.DEFAULT_HEIGHT_DP),
+            transparencyPct = prefs.getInt(FloatingVolumeService.KEY_TRANSPARENCY_PCT, FloatingVolumeService.DEFAULT_TRANSPARENCY_PCT),
+            shape = prefs.getString(FloatingVolumeService.KEY_SHAPE, FloatingVolumeService.SHAPE_CIRCLE) ?: FloatingVolumeService.SHAPE_CIRCLE,
+            colorHex = colorHex,
+            audioStream = prefs.getString(FloatingVolumeService.KEY_AUDIO_STREAM, FloatingVolumeService.DEFAULT_STREAM) ?: FloatingVolumeService.STREAM_MUSIC,
+            hapticTap = prefs.getBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, true),
+            snapToEdge = prefs.getBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, false),
+            doubleTapMute = prefs.getBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, false),
+            holdToRepeat = prefs.getBoolean(FloatingVolumeService.KEY_HOLD_TO_REPEAT, true),
+            autoDimSec = prefs.getInt(FloatingVolumeService.KEY_AUTO_DIM_SEC, 0),
+            dimOpacityPct = prefs.getInt(FloatingVolumeService.KEY_DIM_OPACITY_PCT, 15),
+            volumeStep = prefs.getInt(FloatingVolumeService.KEY_VOLUME_STEP, 1),
+            maxVolumeLimitPct = prefs.getInt(FloatingVolumeService.KEY_MAX_VOLUME_LIMIT_PCT, 100),
+            swipeScrub = prefs.getBoolean(FloatingVolumeService.KEY_SWIPE_SCRUB, true),
+            popoutMode = prefs.getString(FloatingVolumeService.KEY_POPOUT_MODE, FloatingVolumeService.POPOUT_SWIPE_INWARD) ?: FloatingVolumeService.POPOUT_SWIPE_INWARD,
+            hideInFullscreen = prefs.getBoolean(FloatingVolumeService.KEY_HIDE_FULLSCREEN, false)
+        )
+    }
+
+    private fun showNewPresetDialog() {
+        val input = EditText(this).apply { hint = "Custom preset name" }
+        AlertDialog.Builder(this)
+            .setTitle("Create Custom Preset")
+            .setMessage("Saves all current shape, volume step, cap, and gesture settings into a new quick preset.")
+            .setView(input)
+            .setPositiveButton("Save Preset") { _, _ ->
+                val name = input.text.toString().trim().ifEmpty { "Custom" }
+                val newId = "custom_${System.currentTimeMillis()}"
+                val arr = getSavedPresetsArray()
+                arr.put(captureCurrentSettingsAsPreset(newId, name))
+                prefs.edit().putString(KEY_ACTIVE_PRESET_ID, newId).apply()
+                savePresetsArray(arr)
+                Toast.makeText(this, "Saved $name", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showPresetEditorDialog(index: Int, existing: JSONObject) {
+        val currentId = existing.optString("id", "preset_$index")
+        val currentName = existing.optString("name", "Preset")
+        val input = EditText(this).apply { setText(currentName) }
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle("Edit Preset: $currentName")
+            .setView(input)
+            .setPositiveButton("Save Current & Name") { _, _ ->
+                val nextName = input.text.toString().trim().ifEmpty { currentName }
+                val arr = getSavedPresetsArray()
+                arr.put(index, captureCurrentSettingsAsPreset(currentId, nextName))
+                prefs.edit().putString(KEY_ACTIVE_PRESET_ID, currentId).apply()
+                savePresetsArray(arr)
+                Toast.makeText(this, "Updated $nextName", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+
+        val arr = getSavedPresetsArray()
+        if (arr.length() > 1) {
+            builder.setNeutralButton("Delete") { _, _ ->
+                val nextArr = JSONArray()
+                for (i in 0 until arr.length()) {
+                    if (i != index) nextArr.put(arr.get(i))
+                }
+                savePresetsArray(nextArr)
+                Toast.makeText(this, "Deleted $currentName", Toast.LENGTH_SHORT).show()
+            }
+        }
+        builder.show()
+    }
+
     private fun loadSavedSettingsIntoViews() {
+        syncingViews = true
+        renderPresetButtons()
+
         switchDarkTheme.isChecked = prefs.getBoolean(FloatingVolumeService.KEY_DARK_THEME, true)
+        switchSwipeScrub.isChecked =
+            prefs.getBoolean(FloatingVolumeService.KEY_SWIPE_SCRUB, true)
+        val popoutMode = prefs.getString(
+            FloatingVolumeService.KEY_POPOUT_MODE,
+            "swipe_inward"
+        )
+        switchSingleTapSlider.isChecked = popoutMode == FloatingVolumeService.POPOUT_SINGLE_TAP
+        switchHideFullscreen.isChecked =
+            prefs.getBoolean(FloatingVolumeService.KEY_HIDE_FULLSCREEN, false)
         switchHapticTap.isChecked =
             prefs.getBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, true)
         switchSnapToEdge.isChecked =
-            prefs.getBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, false)
+            prefs.getBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, true)
         switchDoubleTapMute.isChecked =
             prefs.getBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, false)
         switchHoldRepeat.isChecked =
@@ -222,7 +563,7 @@ class MainActivity : AppCompatActivity() {
         switchAutoBoot.isChecked =
             prefs.getBoolean(FloatingVolumeService.KEY_AUTO_BOOT, false)
         switchLockPosition.isChecked =
-            prefs.getBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, false)
+            prefs.getBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, true)
         switchRotateToast.isChecked =
             prefs.getBoolean(FloatingVolumeService.KEY_ROTATE_TOAST, true)
 
@@ -238,6 +579,26 @@ class MainActivity : AppCompatActivity() {
                 else -> R.id.radioStreamMusic
             }
         )
+
+        val step = prefs.getInt(
+            FloatingVolumeService.KEY_VOLUME_STEP,
+            FloatingVolumeService.DEFAULT_VOLUME_STEP
+        )
+        radioGroupStepSize.check(
+            when (step) {
+                2 -> R.id.radioStep2
+                3 -> R.id.radioStep3
+                5 -> R.id.radioStep5
+                else -> R.id.radioStep1
+            }
+        )
+
+        val maxLimit = prefs.getInt(
+            FloatingVolumeService.KEY_MAX_VOLUME_LIMIT_PCT,
+            FloatingVolumeService.DEFAULT_MAX_VOLUME_LIMIT_PCT
+        ).coerceIn(30, 100)
+        seekBarMaxLimit.progress = maxLimit - 30
+        tvMaxLimitValue.text = "$maxLimit%"
 
         val dimSeconds = prefs.getInt(
             FloatingVolumeService.KEY_AUTO_DIM_SEC,
@@ -310,10 +671,12 @@ class MainActivity : AppCompatActivity() {
         updateCurrentOrientationLabel()
         refreshSavedPositionsText()
         syncPositionSlidersForSelectedTarget()
+        syncingViews = false
     }
 
     private fun setupListeners() {
         switchDarkTheme.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
             prefs.edit().putBoolean(FloatingVolumeService.KEY_DARK_THEME, isChecked).apply()
             AppCompatDelegate.setDefaultNightMode(
                 if (isChecked) AppCompatDelegate.MODE_NIGHT_YES
@@ -321,79 +684,85 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        switchSwipeScrub.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_SWIPE_SCRUB, isChecked).apply()
+        }
+
+        switchSingleTapSlider.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
+            val mode = if (isChecked) FloatingVolumeService.POPOUT_SINGLE_TAP else FloatingVolumeService.POPOUT_SWIPE_INWARD
+            prefs.edit().putString(FloatingVolumeService.KEY_POPOUT_MODE, mode).apply()
+        }
+
+        switchHideFullscreen.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_HIDE_FULLSCREEN, isChecked).apply()
+        }
+
         switchHapticTap.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
             prefs.edit().putBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, isChecked).apply()
         }
 
         switchSnapToEdge.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
             prefs.edit().putBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, isChecked).apply()
             syncPositionSlidersForSelectedTarget()
             refreshSavedPositionsText()
         }
 
-        btnPresetGaming.setOnClickListener {
-            applyPresetProfile(
-                name = "Gaming",
-                widthDp = 44,
-                heightDp = 96,
-                transparencyPct = 55,
-                shape = FloatingVolumeService.SHAPE_LINE,
-                colorHex = "#06B6D4",
-                snapToEdge = true,
-                autoDimSec = 5,
-                dimOpacity = 15
-            )
+        btnNewPreset.setOnClickListener {
+            showNewPresetDialog()
         }
 
-        btnPresetBedtime.setOnClickListener {
-            applyPresetProfile(
-                name = "Bedtime",
-                widthDp = 52,
-                heightDp = 112,
-                transparencyPct = 28,
-                shape = FloatingVolumeService.SHAPE_CIRCLE,
-                colorHex = "#10B981",
-                snapToEdge = true,
-                autoDimSec = 3,
-                dimOpacity = 5
-            )
+        btnResetPresets.setOnClickListener {
+            savePresetsArray(buildDefaultPresetsArray())
+            Toast.makeText(this, "Restored default presets", Toast.LENGTH_SHORT).show()
         }
 
-        btnPresetStealth.setOnClickListener {
-            applyPresetProfile(
-                name = "Stealth",
-                widthDp = 58,
-                heightDp = 124,
-                transparencyPct = 0,
-                shape = FloatingVolumeService.SHAPE_LINE,
-                colorHex = "#2563EB",
-                snapToEdge = true,
-                autoDimSec = 0,
-                dimOpacity = 0
-            )
+        btnExportBackup.setOnClickListener {
+            exportBackupLauncher.launch("floating-volume-backup.json")
+        }
+
+        btnImportBackup.setOnClickListener {
+            importBackupLauncher.launch(arrayOf("application/json", "*/*"))
         }
 
         switchDoubleTapMute.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
             prefs.edit().putBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, isChecked).apply()
         }
 
         switchHoldRepeat.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
             prefs.edit().putBoolean(FloatingVolumeService.KEY_HOLD_TO_REPEAT, isChecked).apply()
         }
 
         switchAutoBoot.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
             prefs.edit().putBoolean(FloatingVolumeService.KEY_AUTO_BOOT, isChecked).apply()
+            if (isChecked && !isBackgroundAutostartGranted()) {
+                Toast.makeText(
+                    this,
+                    "Tip: Grant Background Autostart permission above for reliable reboot launch",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
 
         switchLockPosition.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
             prefs.edit().putBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, isChecked).apply()
         }
 
         switchRotateToast.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
             prefs.edit().putBoolean(FloatingVolumeService.KEY_ROTATE_TOAST, isChecked).apply()
         }
 
         radioGroupStream.setOnCheckedChangeListener { _, checkedId ->
+            if (syncingViews) return@setOnCheckedChangeListener
             val stream = when (checkedId) {
                 R.id.radioStreamRing -> FloatingVolumeService.STREAM_RING
                 R.id.radioStreamAlarm -> FloatingVolumeService.STREAM_ALARM
@@ -403,7 +772,32 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putString(FloatingVolumeService.KEY_AUDIO_STREAM, stream).apply()
         }
 
+        radioGroupStepSize.setOnCheckedChangeListener { _, checkedId ->
+            if (syncingViews) return@setOnCheckedChangeListener
+            val step = when (checkedId) {
+                R.id.radioStep2 -> 2
+                R.id.radioStep3 -> 3
+                R.id.radioStep5 -> 5
+                else -> 1
+            }
+            prefs.edit().putInt(FloatingVolumeService.KEY_VOLUME_STEP, step).apply()
+        }
+
+        seekBarMaxLimit.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val pct = 30 + progress
+                tvMaxLimitValue.text = "$pct%"
+                if (fromUser) {
+                    prefs.edit().putInt(FloatingVolumeService.KEY_MAX_VOLUME_LIMIT_PCT, pct).apply()
+                }
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+        })
+
         radioGroupAutoDim.setOnCheckedChangeListener { _, checkedId ->
+            if (syncingViews) return@setOnCheckedChangeListener
             val seconds = when (checkedId) {
                 R.id.radioDim3s -> 3
                 R.id.radioDim5s -> 5
@@ -427,6 +821,10 @@ class MainActivity : AppCompatActivity() {
 
         btnOverlayPermission.setOnClickListener {
             requestOverlayPermissionIfNeeded()
+        }
+
+        btnAutostartPermission.setOnClickListener {
+            requestBackgroundAutostartPermission()
         }
 
         btnStartService.setOnClickListener {
@@ -460,7 +858,9 @@ class MainActivity : AppCompatActivity() {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val widthDp = MIN_WIDTH_DP + progress
                 tvWidthValue.text = "$widthDp dp"
-                prefs.edit().putInt(FloatingVolumeService.KEY_WIDTH_DP, widthDp).apply()
+                if (fromUser) {
+                    prefs.edit().putInt(FloatingVolumeService.KEY_WIDTH_DP, widthDp).apply()
+                }
             }
 
             override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
@@ -471,7 +871,9 @@ class MainActivity : AppCompatActivity() {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val heightDp = MIN_HEIGHT_DP + progress
                 tvHeightValue.text = "$heightDp dp"
-                prefs.edit().putInt(FloatingVolumeService.KEY_HEIGHT_DP, heightDp).apply()
+                if (fromUser) {
+                    prefs.edit().putInt(FloatingVolumeService.KEY_HEIGHT_DP, heightDp).apply()
+                }
             }
 
             override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
@@ -482,7 +884,9 @@ class MainActivity : AppCompatActivity() {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val alphaPct = MIN_ALPHA_PCT + progress
                 tvTransparencyValue.text = "$alphaPct%"
-                prefs.edit().putInt(FloatingVolumeService.KEY_TRANSPARENCY_PCT, alphaPct).apply()
+                if (fromUser) {
+                    prefs.edit().putInt(FloatingVolumeService.KEY_TRANSPARENCY_PCT, alphaPct).apply()
+                }
             }
 
             override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
@@ -490,6 +894,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         radioGroupShape.setOnCheckedChangeListener { _, checkedId ->
+            if (syncingViews) return@setOnCheckedChangeListener
             val shape = if (checkedId == R.id.radioLine) {
                 FloatingVolumeService.SHAPE_LINE
             } else {
@@ -578,32 +983,90 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun applyPresetProfile(
-        name: String,
-        widthDp: Int,
-        heightDp: Int,
-        transparencyPct: Int,
-        shape: String,
-        colorHex: String,
-        snapToEdge: Boolean,
-        autoDimSec: Int,
-        dimOpacity: Int
-    ) {
-        prefs.edit()
-            .putInt(FloatingVolumeService.KEY_WIDTH_DP, widthDp)
-            .putInt(FloatingVolumeService.KEY_HEIGHT_DP, heightDp)
-            .putInt(FloatingVolumeService.KEY_TRANSPARENCY_PCT, transparencyPct)
-            .putString(FloatingVolumeService.KEY_SHAPE, shape)
-            .putInt(FloatingVolumeService.KEY_OVERLAY_COLOR, Color.parseColor(colorHex))
-            .putString(FloatingVolumeService.KEY_AUDIO_STREAM, FloatingVolumeService.STREAM_MUSIC)
-            .putBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, true)
-            .putBoolean(FloatingVolumeService.KEY_HOLD_TO_REPEAT, true)
-            .putBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, snapToEdge)
-            .putInt(FloatingVolumeService.KEY_AUTO_DIM_SEC, autoDimSec)
-            .putInt(FloatingVolumeService.KEY_DIM_OPACITY_PCT, dimOpacity)
-            .apply()
-        loadSavedSettingsIntoViews()
-        Toast.makeText(this, "Applied $name preset", Toast.LENGTH_SHORT).show()
+    private fun writeBackupToUri(uri: Uri) {
+        try {
+            val colorInt = prefs.getInt(FloatingVolumeService.KEY_OVERLAY_COLOR, FloatingVolumeService.DEFAULT_COLOR)
+            val colorHex = String.format("#%06X", 0xFFFFFF and colorInt)
+            val settingsObj = JSONObject().apply {
+                put("appName", "Floating Volume")
+                put("widthDp", prefs.getInt(FloatingVolumeService.KEY_WIDTH_DP, FloatingVolumeService.DEFAULT_WIDTH_DP))
+                put("heightDp", prefs.getInt(FloatingVolumeService.KEY_HEIGHT_DP, FloatingVolumeService.DEFAULT_HEIGHT_DP))
+                put("transparencyPct", prefs.getInt(FloatingVolumeService.KEY_TRANSPARENCY_PCT, FloatingVolumeService.DEFAULT_TRANSPARENCY_PCT))
+                put("shape", prefs.getString(FloatingVolumeService.KEY_SHAPE, FloatingVolumeService.SHAPE_CIRCLE))
+                put("colorHex", colorHex)
+                put("audioStream", prefs.getString(FloatingVolumeService.KEY_AUDIO_STREAM, FloatingVolumeService.DEFAULT_STREAM))
+                put("darkTheme", prefs.getBoolean(FloatingVolumeService.KEY_DARK_THEME, true))
+                put("hapticTap", prefs.getBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, true))
+                put("snapToEdge", prefs.getBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, false))
+                put("doubleTapMute", prefs.getBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, false))
+                put("holdToRepeat", prefs.getBoolean(FloatingVolumeService.KEY_HOLD_TO_REPEAT, true))
+                put("autoStartBoot", prefs.getBoolean(FloatingVolumeService.KEY_AUTO_BOOT, false))
+                put("positionLocked", prefs.getBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, false))
+                put("autoDimSeconds", prefs.getInt(FloatingVolumeService.KEY_AUTO_DIM_SEC, 0))
+                put("dimOpacityPct", prefs.getInt(FloatingVolumeService.KEY_DIM_OPACITY_PCT, 15))
+                put("volumeStep", prefs.getInt(FloatingVolumeService.KEY_VOLUME_STEP, 1))
+                put("maxVolumeLimitPct", prefs.getInt(FloatingVolumeService.KEY_MAX_VOLUME_LIMIT_PCT, 100))
+                put("swipeScrub", prefs.getBoolean(FloatingVolumeService.KEY_SWIPE_SCRUB, true))
+                put("popoutSliderMode", prefs.getString(FloatingVolumeService.KEY_POPOUT_MODE, FloatingVolumeService.POPOUT_SWIPE_INWARD))
+                put("hideInFullscreen", prefs.getBoolean(FloatingVolumeService.KEY_HIDE_FULLSCREEN, false))
+                put("presets", getSavedPresetsArray())
+            }
+            val root = JSONObject().apply {
+                put("schemaVersion", 4)
+                put("packageName", packageName)
+                put("settings", settingsObj)
+            }
+            contentResolver.openOutputStream(uri)?.use { stream ->
+                stream.write(root.toString(2).toByteArray(Charsets.UTF_8))
+            }
+            Toast.makeText(this, "Backup exported successfully", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun readBackupFromUri(uri: Uri) {
+        try {
+            val jsonText = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: return
+            val root = JSONObject(jsonText)
+            val s = root.optJSONObject("settings") ?: root
+            val editor = prefs.edit()
+
+            if (s.has("widthDp")) editor.putInt(FloatingVolumeService.KEY_WIDTH_DP, s.optInt("widthDp"))
+            if (s.has("heightDp")) editor.putInt(FloatingVolumeService.KEY_HEIGHT_DP, s.optInt("heightDp"))
+            if (s.has("transparencyPct")) editor.putInt(FloatingVolumeService.KEY_TRANSPARENCY_PCT, s.optInt("transparencyPct"))
+            if (s.has("shape")) editor.putString(FloatingVolumeService.KEY_SHAPE, s.optString("shape"))
+            if (s.has("colorHex")) {
+                try {
+                    editor.putInt(FloatingVolumeService.KEY_OVERLAY_COLOR, Color.parseColor(s.getString("colorHex")))
+                } catch (_: Exception) {}
+            }
+            if (s.has("audioStream")) editor.putString(FloatingVolumeService.KEY_AUDIO_STREAM, s.optString("audioStream"))
+            if (s.has("darkTheme")) editor.putBoolean(FloatingVolumeService.KEY_DARK_THEME, s.optBoolean("darkTheme"))
+            if (s.has("hapticTap")) editor.putBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, s.optBoolean("hapticTap"))
+            if (s.has("snapToEdge")) editor.putBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, s.optBoolean("snapToEdge"))
+            if (s.has("doubleTapMute")) editor.putBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, s.optBoolean("doubleTapMute"))
+            if (s.has("holdToRepeat")) editor.putBoolean(FloatingVolumeService.KEY_HOLD_TO_REPEAT, s.optBoolean("holdToRepeat"))
+            if (s.has("autoStartBoot")) editor.putBoolean(FloatingVolumeService.KEY_AUTO_BOOT, s.optBoolean("autoStartBoot"))
+            if (s.has("positionLocked")) editor.putBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, s.optBoolean("positionLocked"))
+            if (s.has("autoDimSeconds")) editor.putInt(FloatingVolumeService.KEY_AUTO_DIM_SEC, s.optInt("autoDimSeconds"))
+            if (s.has("dimOpacityPct")) editor.putInt(FloatingVolumeService.KEY_DIM_OPACITY_PCT, s.optInt("dimOpacityPct"))
+            if (s.has("volumeStep")) editor.putInt(FloatingVolumeService.KEY_VOLUME_STEP, s.optInt("volumeStep"))
+            if (s.has("maxVolumeLimitPct")) editor.putInt(FloatingVolumeService.KEY_MAX_VOLUME_LIMIT_PCT, s.optInt("maxVolumeLimitPct"))
+            if (s.has("swipeScrub")) editor.putBoolean(FloatingVolumeService.KEY_SWIPE_SCRUB, s.optBoolean("swipeScrub"))
+            if (s.has("popoutSliderMode")) editor.putString(FloatingVolumeService.KEY_POPOUT_MODE, s.optString("popoutSliderMode"))
+            if (s.has("hideInFullscreen")) editor.putBoolean(FloatingVolumeService.KEY_HIDE_FULLSCREEN, s.optBoolean("hideInFullscreen"))
+            val presetsArr = s.optJSONArray("presets")
+            if (presetsArr != null && presetsArr.length() > 0) {
+                editor.putString(KEY_PRESETS_JSON, presetsArr.toString())
+            }
+            editor.apply()
+
+            loadSavedSettingsIntoViews()
+            Toast.makeText(this, "Backup restored", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Invalid backup file", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun saveOverlayColor(colorInt: Int) {
@@ -752,23 +1215,82 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun isBackgroundAutostartGranted(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    @SuppressLint("BatteryLife")
+    private fun requestBackgroundAutostartPermission() {
+        if (!isBackgroundAutostartGranted()) {
+            try {
+                val batteryIntent = Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName")
+                )
+                autostartPermissionLauncher.launch(batteryIntent)
+                return
+            } catch (_: Exception) {
+                // Fall through to OEM autostart or app details
+            }
+        }
+
+        val oemIntents = listOf(
+            Intent().setComponent(ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")),
+            Intent().setComponent(ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity")),
+            Intent().setComponent(ComponentName("com.oplus.safecenter", "com.oplus.safecenter.permission.startup.StartupAppListActivity")),
+            Intent().setComponent(ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity")),
+            Intent().setComponent(ComponentName("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity")),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+        )
+
+        for (candidate in oemIntents) {
+            if (candidate.resolveActivity(packageManager) != null) {
+                autostartPermissionLauncher.launch(candidate)
+                return
+            }
+        }
+
+        Toast.makeText(
+            this,
+            "Unrestricted battery permission is already enabled",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
     private fun launchFloatingService() {
         val serviceIntent = Intent(this, FloatingVolumeService::class.java)
         ContextCompat.startForegroundService(this, serviceIntent)
     }
 
     private fun updatePermissionUi() {
-        val granted = Settings.canDrawOverlays(this)
-        tvPermissionStatus.text = if (granted) {
+        val overlayOk = Settings.canDrawOverlays(this)
+        val autostartOk = isBackgroundAutostartGranted()
+
+        tvPermissionStatus.text = if (overlayOk) {
             "Overlay permission: Granted"
         } else {
             "Overlay permission: Required (Display over other apps)"
         }
-        btnOverlayPermission.isEnabled = !granted
-        btnStartService.isEnabled = granted
+
+        tvAutostartStatus.text = if (autostartOk) {
+            "Background autostart: Granted (Unrestricted battery)"
+        } else {
+            "Background autostart: Recommended for reboot & background"
+        }
+
+        btnOverlayPermission.isEnabled = !overlayOk
+        btnAutostartPermission.text = if (autostartOk) {
+            "Background Autostart Granted (Open OEM / Battery)"
+        } else {
+            "Grant Background Autostart Permission"
+        }
+        btnStartService.isEnabled = overlayOk
     }
 
     companion object {
+        private const val KEY_PRESETS_JSON = "profile_presets_json"
+        private const val KEY_ACTIVE_PRESET_ID = "active_preset_id"
         private const val MIN_WIDTH_DP = 1
         private const val MAX_WIDTH_DP = 160
         private const val MIN_HEIGHT_DP = 24

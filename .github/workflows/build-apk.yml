@@ -1,9 +1,12 @@
-name: Build Android Debug APK
+name: Build & Release Android APK
 
 on:
   workflow_dispatch:
   push:
     branches: [ main, master ]
+
+permissions:
+  contents: write
 
 jobs:
   build-apk:
@@ -16,13 +19,31 @@ jobs:
           java-version: 17
       - name: Accept Android SDK Licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+      - name: Read Version Metadata
+        id: version
+        run: |
+          VERSION_NAME=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')
+          VERSION_CODE=$(grep -m1 'versionCode' app/build.gradle.kts | sed -E 's/[^0-9]*([0-9]+).*/\1/')
+          echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
       - name: Build Debug APK
         run: gradle assembleDebug
+      - name: Package Versioned APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/FloatingVolume-v${{ steps.version.outputs.name }}-build${{ steps.version.outputs.code }}.apk"
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: floating-volume-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: dist/*.apk
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.name }}
+          name: Floating Volume v${{ steps.version.outputs.name }} (Build ${{ steps.version.outputs.code }})
+          files: dist/*.apk
+          make_latest: true
