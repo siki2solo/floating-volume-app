@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -20,6 +21,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.service.quicksettings.TileService
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -49,6 +51,9 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     private var touchSlop = 0
     private var lastAppliedLandscape: Boolean? = null
 
+    private var pendingSingleTapRunnable: Runnable? = null
+    private var lastTapTimeMs = 0L
+
     private var initialX = 0
     private var initialY = 0
     private var initialTouchX = 0f
@@ -63,7 +68,6 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         }
     }
 
-    // Secondary orientation detector so forced rotation in games/video players is always caught
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) = Unit
         override fun onDisplayRemoved(displayId: Int) = Unit
@@ -83,6 +87,9 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         touchSlop = ViewConfiguration.get(this).scaledTouchSlop
 
+        prefs.edit().putBoolean(KEY_IS_SERVICE_RUNNING, true).apply()
+        requestTileRefresh()
+
         startAsForegroundService()
         createFloatingOverlay()
 
@@ -99,8 +106,13 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     override fun onDestroy() {
         super.onDestroy()
         mainHandler.removeCallbacks(longPressRunnable)
+        pendingSingleTapRunnable?.let { mainHandler.removeCallbacks(it) }
         displayManager.unregisterDisplayListener(displayListener)
         prefs.unregisterOnSharedPreferenceChangeListener(this)
+
+        prefs.edit().putBoolean(KEY_IS_SERVICE_RUNNING, false).apply()
+        requestTileRefresh()
+
         floatingView?.let { view ->
             if (view.isAttachedToWindow) {
                 windowManager.removeView(view)
@@ -113,6 +125,11 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         when (key) {
             KEY_WIDTH_DP, KEY_HEIGHT_DP, KEY_TRANSPARENCY_PCT, KEY_SHAPE, KEY_OVERLAY_COLOR -> {
                 applyAppearanceFromPrefs()
+            }
+            KEY_SNAP_TO_EDGE -> {
+                if (prefs.getBoolean(KEY_SNAP_TO_EDGE, false)) {
+                    snapCurrentOverlayToNearestEdge()
+                }
             }
             KEY_POS_X_PORTRAIT, KEY_POS_Y_PORTRAIT, KEY_POS_X_LANDSCAPE, KEY_POS_Y_LANDSCAPE -> {
                 moveOverlayToOrientationPosition(isCurrentlyLandscape(), showNotice = false)
@@ -127,6 +144,13 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         if (lastAppliedLandscape != isLandscape) {
             moveOverlayToOrientationPosition(isLandscape, showNotice = true)
         }
+    }
+
+    private fun requestTileRefresh() {
+        TileService.requestListeningState(
+            this,
+            ComponentName(this, FloatingVolumeTileService::class.java)
+        )
     }
 
     private fun handleOrientationCheck(showNotice: Boolean) {
@@ -167,6 +191,21 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                 Toast.LENGTH_SHORT
             ).show()
         }
+    }
+
+    private fun snapCurrentOverlayToNearestEdge() {
+        val view = floatingView ?: return
+        val (screenW, _) = getScreenDimensionsPx()
+        val viewW = if (layoutParams.width > 0) layoutParams.width else dpToPx(DEFAULT_WIDTH_DP)
+        val maxX = (screenW - viewW).coerceAtLeast(0)
+        val centerX = layoutParams.x + viewW / 2
+        val snappedX = if (centerX < screenW / 2) 0 else maxX
+
+        layoutParams.x = snappedX
+        if (view.isAttachedToWindow) {
+            windowManager.updateViewLayout(view, layoutParams)
+        }
+        savePositionForCurrentOrientation(layoutParams.x, layoutParams.y)
     }
 
     private fun isPositionLocked(): Boolean {
@@ -295,16 +334,16 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                     if (isDragging) {
                         isDragging = false
                         v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
-                        savePositionForCurrentOrientation(layoutParams.x, layoutParams.y)
+                        if (prefs.getBoolean(KEY_SNAP_TO_EDGE, false)) {
+                            snapCurrentOverlayToNearestEdge()
+                        } else {
+                            savePositionForCurrentOrientation(layoutParams.x, layoutParams.y)
+                        }
                     } else {
                         val dx = event.rawX - initialTouchX
                         val dy = event.rawY - initialTouchY
                         if (hypot(dx.toDouble(), dy.toDouble()) <= touchSlop) {
-                            if (event.y < v.height / 2f) {
-                                adjustVolume(AudioManager.ADJUST_RAISE)
-                            } else {
-                                adjustVolume(AudioManager.ADJUST_LOWER)
-                            }
+                            handleOverlayTap(v, event.y < v.height / 2f)
                             v.performClick()
                         }
                     }
@@ -332,6 +371,50 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         layoutParams.y = clampedY
 
         windowManager.addView(view, layoutParams)
+    }
+
+    private fun handleOverlayTap(view: View, isUpperHalf: Boolean) {
+        val doubleTapMuteEnabled = prefs.getBoolean(KEY_DOUBLE_TAP_MUTE, false)
+        val direction = if (isUpperHalf) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
+
+        if (!doubleTapMuteEnabled) {
+            triggerHapticIfEnabled(view)
+            adjustVolume(direction)
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        if (now - lastTapTimeMs <= DOUBLE_TAP_TIMEOUT_MS) {
+            pendingSingleTapRunnable?.let { mainHandler.removeCallbacks(it) }
+            pendingSingleTapRunnable = null
+            lastTapTimeMs = 0L
+            triggerHapticIfEnabled(view)
+            adjustVolume(AudioManager.ADJUST_TOGGLE_MUTE)
+        } else {
+            lastTapTimeMs = now
+            val runnable = Runnable {
+                triggerHapticIfEnabled(view)
+                adjustVolume(direction)
+                pendingSingleTapRunnable = null
+            }
+            pendingSingleTapRunnable = runnable
+            mainHandler.postDelayed(runnable, DOUBLE_TAP_TIMEOUT_MS)
+        }
+    }
+
+    private fun triggerHapticIfEnabled(view: View) {
+        if (prefs.getBoolean(KEY_HAPTIC_TAP, true)) {
+            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        }
+    }
+
+    private fun getSelectedAudioStream(): Int {
+        return when (prefs.getString(KEY_AUDIO_STREAM, DEFAULT_STREAM)) {
+            STREAM_RING -> AudioManager.STREAM_RING
+            STREAM_ALARM -> AudioManager.STREAM_ALARM
+            STREAM_VOICE -> AudioManager.STREAM_VOICE_CALL
+            else -> AudioManager.STREAM_MUSIC
+        }
     }
 
     private fun applyAppearanceFromPrefs(addIfMissing: Boolean = true) {
@@ -375,7 +458,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
     private fun adjustVolume(direction: Int) {
         audioManager.adjustStreamVolume(
-            AudioManager.STREAM_MUSIC,
+            getSelectedAudioStream(),
             direction,
             AudioManager.FLAG_SHOW_UI
         )
@@ -443,6 +526,13 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val KEY_DARK_THEME = "dark_theme"
         const val KEY_ROTATE_TOAST = "rotate_toast"
 
+        const val KEY_AUDIO_STREAM = "audio_stream"
+        const val KEY_HAPTIC_TAP = "haptic_tap"
+        const val KEY_SNAP_TO_EDGE = "snap_to_edge"
+        const val KEY_DOUBLE_TAP_MUTE = "double_tap_mute"
+        const val KEY_AUTO_BOOT = "auto_start_boot"
+        const val KEY_IS_SERVICE_RUNNING = "is_service_running"
+
         const val KEY_POS_X_PORTRAIT = "pos_x_portrait"
         const val KEY_POS_Y_PORTRAIT = "pos_y_portrait"
         const val KEY_POS_X_LANDSCAPE = "pos_x_landscape"
@@ -451,13 +541,20 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val SHAPE_CIRCLE = "circle"
         const val SHAPE_LINE = "line"
 
+        const val STREAM_MUSIC = "music"
+        const val STREAM_RING = "ring"
+        const val STREAM_ALARM = "alarm"
+        const val STREAM_VOICE = "voice"
+        const val DEFAULT_STREAM = "music"
+
         const val DEFAULT_WIDTH_DP = 56
-        const val DEFAULT_HEIGHT_DP = 219
-        const val DEFAULT_TRANSPARENCY_PCT = 98
+        const val DEFAULT_HEIGHT_DP = 112
+        const val DEFAULT_TRANSPARENCY_PCT = 82
         val DEFAULT_COLOR = 0xFF2563EB.toInt()
 
         private const val CHANNEL_ID = "floating_volume_channel"
         private const val NOTIFICATION_ID = 1001
         private const val LONG_PRESS_TIMEOUT_MS = 400L
+        private const val DOUBLE_TAP_TIMEOUT_MS = 220L
     }
 }

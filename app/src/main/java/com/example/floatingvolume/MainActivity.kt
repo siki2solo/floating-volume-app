@@ -41,11 +41,24 @@ class MainActivity : AppCompatActivity() {
     private lateinit var switchDarkTheme: Switch
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchHapticTap: Switch
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchSnapToEdge: Switch
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchDoubleTapMute: Switch
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchAutoBoot: Switch
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
     private lateinit var switchLockPosition: Switch
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private lateinit var switchRotateToast: Switch
 
+    private lateinit var radioGroupStream: RadioGroup
     private lateinit var radioGroupShape: RadioGroup
     private lateinit var seekBarWidth: SeekBar
     private lateinit var seekBarHeight: SeekBar
@@ -125,10 +138,16 @@ class MainActivity : AppCompatActivity() {
         btnOverlayPermission = findViewById(R.id.btnOverlayPermission)
         btnStartService = findViewById(R.id.btnStartService)
         btnStopService = findViewById(R.id.btnStopService)
+
         switchDarkTheme = findViewById(R.id.switchDarkTheme)
+        switchHapticTap = findViewById(R.id.switchHapticTap)
+        switchSnapToEdge = findViewById(R.id.switchSnapToEdge)
+        switchDoubleTapMute = findViewById(R.id.switchDoubleTapMute)
+        switchAutoBoot = findViewById(R.id.switchAutoBoot)
         switchLockPosition = findViewById(R.id.switchLockPosition)
         switchRotateToast = findViewById(R.id.switchRotateToast)
 
+        radioGroupStream = findViewById(R.id.radioGroupStream)
         radioGroupShape = findViewById(R.id.radioGroupShape)
         seekBarWidth = findViewById(R.id.seekBarWidth)
         seekBarHeight = findViewById(R.id.seekBarHeight)
@@ -176,10 +195,31 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadSavedSettingsIntoViews() {
         switchDarkTheme.isChecked = prefs.getBoolean(FloatingVolumeService.KEY_DARK_THEME, true)
+        switchHapticTap.isChecked =
+            prefs.getBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, true)
+        switchSnapToEdge.isChecked =
+            prefs.getBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, true)
+        switchDoubleTapMute.isChecked =
+            prefs.getBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, true)
+        switchAutoBoot.isChecked =
+            prefs.getBoolean(FloatingVolumeService.KEY_AUTO_BOOT, true)
         switchLockPosition.isChecked =
             prefs.getBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, false)
         switchRotateToast.isChecked =
             prefs.getBoolean(FloatingVolumeService.KEY_ROTATE_TOAST, true)
+
+        val stream = prefs.getString(
+            FloatingVolumeService.KEY_AUDIO_STREAM,
+            FloatingVolumeService.DEFAULT_STREAM
+        )
+        radioGroupStream.check(
+            when (stream) {
+                FloatingVolumeService.STREAM_RING -> R.id.radioStreamRing
+                FloatingVolumeService.STREAM_ALARM -> R.id.radioStreamAlarm
+                FloatingVolumeService.STREAM_VOICE -> R.id.radioStreamVoice
+                else -> R.id.radioStreamMusic
+            }
+        )
 
         val widthDp = prefs.getInt(
             FloatingVolumeService.KEY_WIDTH_DP,
@@ -222,7 +262,6 @@ class MainActivity : AppCompatActivity() {
             if (shape == FloatingVolumeService.SHAPE_LINE) R.id.radioLine else R.id.radioCircle
         )
 
-        // Default selector to match whichever orientation the device is currently in
         val isNowLandscape =
             resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         radioGroupOrientTarget.check(
@@ -244,12 +283,40 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        switchHapticTap.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, isChecked).apply()
+        }
+
+        switchSnapToEdge.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, isChecked).apply()
+            syncPositionSlidersForSelectedTarget()
+            refreshSavedPositionsText()
+        }
+
+        switchDoubleTapMute.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, isChecked).apply()
+        }
+
+        switchAutoBoot.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_AUTO_BOOT, isChecked).apply()
+        }
+
         switchLockPosition.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, isChecked).apply()
         }
 
         switchRotateToast.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(FloatingVolumeService.KEY_ROTATE_TOAST, isChecked).apply()
+        }
+
+        radioGroupStream.setOnCheckedChangeListener { _, checkedId ->
+            val stream = when (checkedId) {
+                R.id.radioStreamRing -> FloatingVolumeService.STREAM_RING
+                R.id.radioStreamAlarm -> FloatingVolumeService.STREAM_ALARM
+                R.id.radioStreamVoice -> FloatingVolumeService.STREAM_VOICE
+                else -> FloatingVolumeService.STREAM_MUSIC
+            }
+            prefs.edit().putString(FloatingVolumeService.KEY_AUDIO_STREAM, stream).apply()
         }
 
         btnOverlayPermission.setOnClickListener {
