@@ -14,17 +14,20 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.hardware.display.DisplayManager
 import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import kotlin.math.hypot
 import kotlin.math.min
@@ -33,6 +36,8 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
     private lateinit var windowManager: WindowManager
     private lateinit var audioManager: AudioManager
+    private lateinit var displayManager: DisplayManager
+    private lateinit var notificationManager: NotificationManager
     private lateinit var prefs: SharedPreferences
 
     private var floatingView: View? = null
@@ -42,6 +47,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     private val mainHandler = Handler(Looper.getMainLooper())
     private var isDragging = false
     private var touchSlop = 0
+    private var lastAppliedLandscape: Boolean? = null
 
     private var initialX = 0
     private var initialY = 0
@@ -57,30 +63,43 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         }
     }
 
+    // Secondary orientation detector so forced rotation in games/video players is always caught
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+        override fun onDisplayChanged(displayId: Int) {
+            handleOrientationCheck(showNotice = true)
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         touchSlop = ViewConfiguration.get(this).scaledTouchSlop
 
         startAsForegroundService()
         createFloatingOverlay()
 
-        // Live sync all appearance and Portrait/Landscape location edits from MainActivity
+        displayManager.registerDisplayListener(displayListener, mainHandler)
         prefs.registerOnSharedPreferenceChangeListener(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         applyAppearanceFromPrefs()
+        handleOrientationCheck(showNotice = false)
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
         mainHandler.removeCallbacks(longPressRunnable)
+        displayManager.unregisterDisplayListener(displayListener)
         prefs.unregisterOnSharedPreferenceChangeListener(this)
         floatingView?.let { view ->
             if (view.isAttachedToWindow) {
@@ -96,28 +115,57 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                 applyAppearanceFromPrefs()
             }
             KEY_POS_X_PORTRAIT, KEY_POS_Y_PORTRAIT, KEY_POS_X_LANDSCAPE, KEY_POS_Y_LANDSCAPE -> {
-                moveOverlayToOrientationPosition(
-                    resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-                )
+                moveOverlayToOrientationPosition(isCurrentlyLandscape(), showNotice = false)
             }
         }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        val isLandscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE
-        moveOverlayToOrientationPosition(isLandscape)
+        val isLandscape = newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE ||
+            isCurrentlyLandscape()
+        if (lastAppliedLandscape != isLandscape) {
+            moveOverlayToOrientationPosition(isLandscape, showNotice = true)
+        }
     }
 
-    private fun moveOverlayToOrientationPosition(isLandscape: Boolean) {
+    private fun handleOrientationCheck(showNotice: Boolean) {
+        val isLandscape = isCurrentlyLandscape()
+        if (lastAppliedLandscape != isLandscape) {
+            moveOverlayToOrientationPosition(isLandscape, showNotice = showNotice)
+        }
+    }
+
+    private fun isCurrentlyLandscape(): Boolean {
+        val (screenW, screenH) = getScreenDimensionsPx()
+        return screenW > screenH
+    }
+
+    private fun moveOverlayToOrientationPosition(isLandscape: Boolean, showNotice: Boolean) {
         val view = floatingView ?: return
         val (savedX, savedY) = loadPositionForOrientation(isLandscape)
         val (clampedX, clampedY) = clampCoordinates(savedX, savedY)
 
         layoutParams.x = clampedX
         layoutParams.y = clampedY
+        lastAppliedLandscape = isLandscape
+
         if (view.isAttachedToWindow) {
             windowManager.updateViewLayout(view, layoutParams)
+        }
+
+        val modeLabel = if (isLandscape) "Landscape" else "Portrait"
+        notificationManager.notify(
+            NOTIFICATION_ID,
+            buildForegroundNotification("$modeLabel spot: ($clampedX, $clampedY)")
+        )
+
+        if (showNotice && prefs.getBoolean(KEY_ROTATE_TOAST, true)) {
+            Toast.makeText(
+                this,
+                "$modeLabel detected -> moved to ($clampedX, $clampedY)",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -127,7 +175,8 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
     private fun startAsForegroundService() {
         createNotificationChannel()
-        val notification = buildForegroundNotification()
+        val modeLabel = if (isCurrentlyLandscape()) "Landscape" else "Portrait"
+        val notification = buildForegroundNotification("Active in $modeLabel mode")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
@@ -150,12 +199,11 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                 description = "Keeps the floating volume overlay active across apps"
                 setShowBadge(false)
             }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            notificationManager.createNotificationChannel(channel)
         }
     }
 
-    private fun buildForegroundNotification(): Notification {
+    private fun buildForegroundNotification(statusText: String): Notification {
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -168,7 +216,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Floating Volume Active")
-            .setContentText("Tap upper half for Volume Up, lower half for Volume Down")
+            .setContentText(statusText)
             .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -185,8 +233,8 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        val isLandscape =
-            resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val isLandscape = isCurrentlyLandscape()
+        lastAppliedLandscape = isLandscape
         val (startX, startY) = loadPositionForOrientation(isLandscape)
 
         layoutParams = WindowManager.LayoutParams(
@@ -299,7 +347,6 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         val widthPx = dpToPx(widthDp)
         val heightPx = dpToPx(heightDp)
         val alpha = ((transparencyPct / 100f) * 255).toInt().coerceIn(0, 255)
-        // At 0% opacity, set strokeAlpha to 0 as well so the overlay is completely invisible
         val strokeAlpha = if (alpha == 0) 0 else min(255, alpha + 45)
 
         if (shape == SHAPE_LINE) {
@@ -335,8 +382,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     }
 
     private fun savePositionForCurrentOrientation(x: Int, y: Int) {
-        val isLandscape =
-            resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val isLandscape = isCurrentlyLandscape()
         val editor = prefs.edit()
         if (isLandscape) {
             editor.putInt(KEY_POS_X_LANDSCAPE, x)
@@ -349,13 +395,14 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     }
 
     private fun loadPositionForOrientation(isLandscape: Boolean): Pair<Int, Int> {
+        val (screenW, screenH) = getScreenDimensionsPx()
         return if (isLandscape) {
-            val defaultX = prefs.getInt(KEY_POS_X_LANDSCAPE, dpToPx(24))
-            val defaultY = prefs.getInt(KEY_POS_Y_LANDSCAPE, dpToPx(96))
+            val defaultX = prefs.getInt(KEY_POS_X_LANDSCAPE, (screenW * 0.10f).toInt())
+            val defaultY = prefs.getInt(KEY_POS_Y_LANDSCAPE, (screenH * 0.25f).toInt())
             defaultX to defaultY
         } else {
-            val defaultX = prefs.getInt(KEY_POS_X_PORTRAIT, dpToPx(24))
-            val defaultY = prefs.getInt(KEY_POS_Y_PORTRAIT, dpToPx(180))
+            val defaultX = prefs.getInt(KEY_POS_X_PORTRAIT, (screenW * 0.85f).toInt())
+            val defaultY = prefs.getInt(KEY_POS_Y_PORTRAIT, (screenH * 0.38f).toInt())
             defaultX to defaultY
         }
     }
@@ -374,8 +421,9 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             val bounds = windowManager.currentWindowMetrics.bounds
             bounds.width() to bounds.height()
         } else {
+            val metrics = DisplayMetrics()
             @Suppress("DEPRECATION")
-            val metrics = resources.displayMetrics
+            windowManager.defaultDisplay.getRealMetrics(metrics)
             metrics.widthPixels to metrics.heightPixels
         }
     }
@@ -393,6 +441,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val KEY_OVERLAY_COLOR = "overlay_color"
         const val KEY_POSITION_LOCKED = "position_locked"
         const val KEY_DARK_THEME = "dark_theme"
+        const val KEY_ROTATE_TOAST = "rotate_toast"
 
         const val KEY_POS_X_PORTRAIT = "pos_x_portrait"
         const val KEY_POS_Y_PORTRAIT = "pos_y_portrait"
@@ -402,10 +451,10 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val SHAPE_CIRCLE = "circle"
         const val SHAPE_LINE = "line"
 
-        const val DEFAULT_WIDTH_DP = 80
-        const val DEFAULT_HEIGHT_DP = 156
-        const val DEFAULT_TRANSPARENCY_PCT = 23
-        val DEFAULT_COLOR = 0xFF000000.toInt()
+        const val DEFAULT_WIDTH_DP = 56
+        const val DEFAULT_HEIGHT_DP = 219
+        const val DEFAULT_TRANSPARENCY_PCT = 98
+        val DEFAULT_COLOR = 0xFF2563EB.toInt()
 
         private const val CHANNEL_ID = "floating_volume_channel"
         private const val NOTIFICATION_ID = 1001

@@ -5,14 +5,18 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.RadioGroup
 import android.widget.SeekBar
 import android.widget.Switch
@@ -39,6 +43,9 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("UseSwitchCompatOrMaterialCode")
     private lateinit var switchLockPosition: Switch
 
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchRotateToast: Switch
+
     private lateinit var radioGroupShape: RadioGroup
     private lateinit var seekBarWidth: SeekBar
     private lateinit var seekBarHeight: SeekBar
@@ -53,10 +60,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var seekBarGreen: SeekBar
     private lateinit var seekBarBlue: SeekBar
 
+    private lateinit var tvCurrentOrientation: TextView
     private lateinit var radioGroupOrientTarget: RadioGroup
+    private lateinit var previewScreenFrame: FrameLayout
+    private lateinit var previewDot: View
+    private lateinit var tvPreviewHint: TextView
+    private lateinit var tvPosXLabel: TextView
+    private lateinit var tvPosYLabel: TextView
     private lateinit var seekBarPosX: SeekBar
     private lateinit var seekBarPosY: SeekBar
     private lateinit var tvSavedPositions: TextView
+    private lateinit var btnTestRotate: Button
 
     private var updatingColorSliders = false
     private var updatingPositionSliders = false
@@ -87,6 +101,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         bindViews()
+        ensureDefaultPositionsExist()
         loadSavedSettingsIntoViews()
         setupListeners()
         updatePermissionUi()
@@ -95,8 +110,14 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updatePermissionUi()
+        updateCurrentOrientationLabel()
         refreshSavedPositionsText()
         syncPositionSlidersForSelectedTarget()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        updateCurrentOrientationLabel()
     }
 
     private fun bindViews() {
@@ -106,6 +127,7 @@ class MainActivity : AppCompatActivity() {
         btnStopService = findViewById(R.id.btnStopService)
         switchDarkTheme = findViewById(R.id.switchDarkTheme)
         switchLockPosition = findViewById(R.id.switchLockPosition)
+        switchRotateToast = findViewById(R.id.switchRotateToast)
 
         radioGroupShape = findViewById(R.id.radioGroupShape)
         seekBarWidth = findViewById(R.id.seekBarWidth)
@@ -121,16 +143,43 @@ class MainActivity : AppCompatActivity() {
         seekBarGreen = findViewById(R.id.seekBarGreen)
         seekBarBlue = findViewById(R.id.seekBarBlue)
 
+        tvCurrentOrientation = findViewById(R.id.tvCurrentOrientation)
         radioGroupOrientTarget = findViewById(R.id.radioGroupOrientTarget)
+        previewScreenFrame = findViewById(R.id.previewScreenFrame)
+        previewDot = findViewById(R.id.previewDot)
+        tvPreviewHint = findViewById(R.id.tvPreviewHint)
+        tvPosXLabel = findViewById(R.id.tvPosXLabel)
+        tvPosYLabel = findViewById(R.id.tvPosYLabel)
         seekBarPosX = findViewById(R.id.seekBarPosX)
         seekBarPosY = findViewById(R.id.seekBarPosY)
         tvSavedPositions = findViewById(R.id.tvSavedPositions)
+        btnTestRotate = findViewById(R.id.btnTestRotate)
+    }
+
+    private fun ensureDefaultPositionsExist() {
+        val editor = prefs.edit()
+        var changed = false
+        if (!prefs.contains(FloatingVolumeService.KEY_POS_X_PORTRAIT)) {
+            val (maxPX, maxPY) = getMaxBoundsForOrientation(false)
+            editor.putInt(FloatingVolumeService.KEY_POS_X_PORTRAIT, (maxPX * 0.88f).toInt())
+            editor.putInt(FloatingVolumeService.KEY_POS_Y_PORTRAIT, (maxPY * 0.38f).toInt())
+            changed = true
+        }
+        if (!prefs.contains(FloatingVolumeService.KEY_POS_X_LANDSCAPE)) {
+            val (maxLX, maxLY) = getMaxBoundsForOrientation(true)
+            editor.putInt(FloatingVolumeService.KEY_POS_X_LANDSCAPE, (maxLX * 0.10f).toInt())
+            editor.putInt(FloatingVolumeService.KEY_POS_Y_LANDSCAPE, (maxLY * 0.25f).toInt())
+            changed = true
+        }
+        if (changed) editor.apply()
     }
 
     private fun loadSavedSettingsIntoViews() {
         switchDarkTheme.isChecked = prefs.getBoolean(FloatingVolumeService.KEY_DARK_THEME, true)
         switchLockPosition.isChecked =
             prefs.getBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, false)
+        switchRotateToast.isChecked =
+            prefs.getBoolean(FloatingVolumeService.KEY_ROTATE_TOAST, true)
 
         val widthDp = prefs.getInt(
             FloatingVolumeService.KEY_WIDTH_DP,
@@ -173,7 +222,15 @@ class MainActivity : AppCompatActivity() {
             if (shape == FloatingVolumeService.SHAPE_LINE) R.id.radioLine else R.id.radioCircle
         )
 
+        // Default selector to match whichever orientation the device is currently in
+        val isNowLandscape =
+            resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        radioGroupOrientTarget.check(
+            if (isNowLandscape) R.id.radioTargetLandscape else R.id.radioTargetPortrait
+        )
+
         applyColorToPickerViews(colorInt)
+        updateCurrentOrientationLabel()
         refreshSavedPositionsText()
         syncPositionSlidersForSelectedTarget()
     }
@@ -189,6 +246,10 @@ class MainActivity : AppCompatActivity() {
 
         switchLockPosition.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, isChecked).apply()
+        }
+
+        switchRotateToast.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_ROTATE_TOAST, isChecked).apply()
         }
 
         btnOverlayPermission.setOnClickListener {
@@ -262,6 +323,7 @@ class MainActivity : AppCompatActivity() {
                 FloatingVolumeService.SHAPE_CIRCLE
             }
             prefs.edit().putString(FloatingVolumeService.KEY_SHAPE, shape).apply()
+            updateOrientationPreviewBox()
         }
 
         val presetColors = mapOf(
@@ -286,6 +348,7 @@ class MainActivity : AppCompatActivity() {
                 saveOverlayColor(colorInt)
                 viewColorPreview.setBackgroundColor(colorInt)
                 tvColorHex.text = String.format("#%06X", 0xFFFFFF and colorInt)
+                updateOrientationPreviewBox()
             }
 
             override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
@@ -305,8 +368,10 @@ class MainActivity : AppCompatActivity() {
                 val isLandscapeTarget =
                     radioGroupOrientTarget.checkedRadioButtonId == R.id.radioTargetLandscape
                 val (maxX, maxY) = getMaxBoundsForOrientation(isLandscapeTarget)
-                val pxX = ((seekBarPosX.progress / 100f) * maxX).toInt()
-                val pxY = ((seekBarPosY.progress / 100f) * maxY).toInt()
+                val xPct = seekBarPosX.progress
+                val yPct = seekBarPosY.progress
+                val pxX = ((xPct / 100f) * maxX).toInt()
+                val pxY = ((yPct / 100f) * maxY).toInt()
 
                 prefs.edit().apply {
                     if (isLandscapeTarget) {
@@ -318,7 +383,9 @@ class MainActivity : AppCompatActivity() {
                     }
                     apply()
                 }
+                updatePositionLabels(isLandscapeTarget, pxX, pxY, xPct, yPct)
                 refreshSavedPositionsText()
+                updateOrientationPreviewBox()
             }
 
             override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
@@ -326,10 +393,21 @@ class MainActivity : AppCompatActivity() {
         }
         seekBarPosX.setOnSeekBarChangeListener(posSliderListener)
         seekBarPosY.setOnSeekBarChangeListener(posSliderListener)
+
+        btnTestRotate.setOnClickListener {
+            val isNowLandscape =
+                resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            requestedOrientation = if (isNowLandscape) {
+                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            } else {
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            }
+        }
     }
 
     private fun saveOverlayColor(colorInt: Int) {
         prefs.edit().putInt(FloatingVolumeService.KEY_OVERLAY_COLOR, colorInt).apply()
+        updateOrientationPreviewBox()
     }
 
     private fun applyColorToPickerViews(colorInt: Int) {
@@ -340,6 +418,7 @@ class MainActivity : AppCompatActivity() {
         viewColorPreview.setBackgroundColor(colorInt)
         tvColorHex.text = String.format("#%06X", 0xFFFFFF and colorInt)
         updatingColorSliders = false
+        updateOrientationPreviewBox()
     }
 
     private fun getMaxBoundsForOrientation(isLandscape: Boolean): Pair<Int, Int> {
@@ -367,18 +446,89 @@ class MainActivity : AppCompatActivity() {
             radioGroupOrientTarget.checkedRadioButtonId == R.id.radioTargetLandscape
         val (maxX, maxY) = getMaxBoundsForOrientation(isLandscapeTarget)
         val x = if (isLandscapeTarget) {
-            prefs.getInt(FloatingVolumeService.KEY_POS_X_LANDSCAPE, maxX)
+            prefs.getInt(FloatingVolumeService.KEY_POS_X_LANDSCAPE, (maxX * 0.10f).toInt())
         } else {
-            prefs.getInt(FloatingVolumeService.KEY_POS_X_PORTRAIT, maxX)
+            prefs.getInt(FloatingVolumeService.KEY_POS_X_PORTRAIT, (maxX * 0.88f).toInt())
         }
         val y = if (isLandscapeTarget) {
-            prefs.getInt(FloatingVolumeService.KEY_POS_Y_LANDSCAPE, maxY / 3)
+            prefs.getInt(FloatingVolumeService.KEY_POS_Y_LANDSCAPE, (maxY * 0.25f).toInt())
         } else {
-            prefs.getInt(FloatingVolumeService.KEY_POS_Y_PORTRAIT, maxY / 3)
+            prefs.getInt(FloatingVolumeService.KEY_POS_Y_PORTRAIT, (maxY * 0.38f).toInt())
         }
-        seekBarPosX.progress = ((x.toFloat() / maxX) * 100f).toInt().coerceIn(0, 100)
-        seekBarPosY.progress = ((y.toFloat() / maxY) * 100f).toInt().coerceIn(0, 100)
+        val xPct = ((x.toFloat() / maxX) * 100f).toInt().coerceIn(0, 100)
+        val yPct = ((y.toFloat() / maxY) * 100f).toInt().coerceIn(0, 100)
+        seekBarPosX.progress = xPct
+        seekBarPosY.progress = yPct
+        updatePositionLabels(isLandscapeTarget, x, y, xPct, yPct)
         updatingPositionSliders = false
+        updateOrientationPreviewBox()
+    }
+
+    private fun updatePositionLabels(
+        isLandscapeTarget: Boolean,
+        pxX: Int,
+        pxY: Int,
+        xPct: Int,
+        yPct: Int
+    ) {
+        val prefix = if (isLandscapeTarget) "Landscape" else "Portrait"
+        tvPreviewHint.text = "$prefix Spot Preview ($xPct%, $yPct%)"
+        tvPosXLabel.text = "$prefix Horizontal (X): $pxX px ($xPct%)"
+        tvPosYLabel.text = "$prefix Vertical (Y): $pxY px ($yPct%)"
+    }
+
+    private fun updateOrientationPreviewBox() {
+        val isLandscapeTarget =
+            radioGroupOrientTarget.checkedRadioButtonId == R.id.radioTargetLandscape
+        val density = resources.displayMetrics.density
+        val boxWidthPx = ((if (isLandscapeTarget) 168 else 96) * density).toInt()
+        val boxHeightPx = ((if (isLandscapeTarget) 96 else 168) * density).toInt()
+
+        val frameLp = previewScreenFrame.layoutParams
+        frameLp.width = boxWidthPx
+        frameLp.height = boxHeightPx
+        previewScreenFrame.layoutParams = frameLp
+
+        val colorInt = prefs.getInt(
+            FloatingVolumeService.KEY_OVERLAY_COLOR,
+            FloatingVolumeService.DEFAULT_COLOR
+        )
+        val shape = prefs.getString(
+            FloatingVolumeService.KEY_SHAPE,
+            FloatingVolumeService.SHAPE_CIRCLE
+        )
+        val dotDrawable = GradientDrawable().apply {
+            this.shape = if (shape == FloatingVolumeService.SHAPE_LINE) {
+                GradientDrawable.RECTANGLE
+            } else {
+                GradientDrawable.OVAL
+            }
+            if (shape == FloatingVolumeService.SHAPE_LINE) {
+                cornerRadius = 8f * density
+            }
+            setColor(colorInt)
+            setStroke((1.5f * density).toInt().coerceAtLeast(1), Color.WHITE)
+        }
+        previewDot.background = dotDrawable
+
+        val dotW = (14 * density).toInt()
+        val dotH = (22 * density).toInt()
+        val maxPreviewX = (boxWidthPx - dotW).coerceAtLeast(0)
+        val maxPreviewY = (boxHeightPx - dotH).coerceAtLeast(0)
+        previewDot.translationX = (seekBarPosX.progress / 100f) * maxPreviewX
+        previewDot.translationY = (seekBarPosY.progress / 100f) * maxPreviewY
+    }
+
+    private fun updateCurrentOrientationLabel() {
+        val isLandscape =
+            resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val label = if (isLandscape) "Landscape" else "Portrait"
+        tvCurrentOrientation.text = "Active screen orientation: $label"
+        btnTestRotate.text = if (isLandscape) {
+            "Test Orientation Switch (Rotate to Portrait)"
+        } else {
+            "Test Orientation Switch (Rotate to Landscape)"
+        }
     }
 
     private fun refreshSavedPositionsText() {
