@@ -19,7 +19,11 @@ class BootReceiver : BroadcastReceiver() {
 
         if (autoStart && Settings.canDrawOverlays(context)) {
             val serviceIntent = Intent(context, FloatingVolumeService::class.java)
-            ContextCompat.startForegroundService(context, serviceIntent)
+            try {
+                ContextCompat.startForegroundService(context, serviceIntent)
+            } catch (_: Exception) {
+                // Restricted by OS background start policy
+            }
         }
     }
 }

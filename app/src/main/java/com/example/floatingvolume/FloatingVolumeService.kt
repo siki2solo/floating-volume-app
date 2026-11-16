@@ -136,6 +136,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     private var lastQuietActive = false
     private var lastForegroundPackage = ""
     private var lastFullscreenDetected = false
+    private var receiversRegistered = false
     private var writeSettingsPromptedThisSession = false
     private var dndWarningShownThisSession = false
 
@@ -199,6 +200,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         if (prefs.getInt(KEY_AUTO_DIM_SEC, DEFAULT_AUTO_DIM_SEC) <= 0) return@Runnable
         isIdleDimmed = true
         applyAppearanceFromPrefs()
+        applyBrightnessAppearance()
     }
 
     private val dismissSliderRunnable = Runnable {
@@ -284,6 +286,35 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         }
     }
 
+    private fun safeAddView(view: View, lp: WindowManager.LayoutParams): Boolean {
+        return try {
+            if (!view.isAttachedToWindow) {
+                windowManager.addView(view, lp)
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun safeUpdateViewLayout(view: View, lp: WindowManager.LayoutParams) {
+        if (!view.isAttachedToWindow) return
+        try {
+            windowManager.updateViewLayout(view, lp)
+        } catch (_: Exception) {
+            // Window detached or token invalidated
+        }
+    }
+
+    private fun safeRemoveView(view: View?) {
+        if (view == null || !view.isAttachedToWindow) return
+        try {
+            windowManager.removeView(view)
+        } catch (_: Exception) {
+            // View already removed
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -296,12 +327,22 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         touchSlop = ViewConfiguration.get(this).scaledTouchSlop
 
+        startAsForegroundService()
+        if (!Settings.canDrawOverlays(this)) {
+            isInstanceRunning = false
+            prefs.edit().putBoolean(KEY_IS_SERVICE_RUNNING, false).apply()
+            requestTileRefresh()
+            stopSelf()
+            return
+        }
+
+        isInstanceRunning = true
         prefs.edit().putBoolean(KEY_IS_SERVICE_RUNNING, true).apply()
         requestTileRefresh()
 
-        startAsForegroundService()
         createFullscreenSentinel()
         createFloatingOverlay()
+        enforceActiveStreamMaxCap()
         syncBrightnessOverlay()
         syncOledShiftState()
         scheduleAutoDim()
@@ -316,6 +357,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
         }
         ContextCompat.registerReceiver(this, systemEventReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
+        receiversRegistered = true
 
         lastHeadphoneConnected = null
         scheduleAudioDeviceCheck(forceApplyOnEnable = true)
@@ -323,6 +365,10 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!isInstanceRunning || !Settings.canDrawOverlays(this)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_VOL_UP -> {
                 wakeFromIdleAndScheduleDim()
@@ -347,6 +393,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                 refreshForegroundNotification()
             }
             else -> {
+                enforceActiveStreamMaxCap()
                 applyAppearanceFromPrefs()
                 syncBrightnessOverlay()
                 syncOledShiftState()
@@ -358,6 +405,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     }
 
     override fun onDestroy() {
+        isInstanceRunning = false
         super.onDestroy()
         restorePreAppVolumeIfNeeded()
         mainHandler.removeCallbacks(longPressRunnable)
@@ -372,13 +420,12 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         mainHandler.removeCallbacks(pendingAppearanceSyncRunnable)
         tapResolveRunnable?.let { mainHandler.removeCallbacks(it) }
         audioRouteCheckRunnable?.let { mainHandler.removeCallbacks(it) }
-        displayManager.unregisterDisplayListener(displayListener)
-        audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
-        prefs.unregisterOnSharedPreferenceChangeListener(this)
-        try {
-            unregisterReceiver(systemEventReceiver)
-        } catch (_: Exception) {
-            // Receiver already unregistered
+        if (receiversRegistered) {
+            receiversRegistered = false
+            try { displayManager.unregisterDisplayListener(displayListener) } catch (_: Exception) {}
+            try { audioManager.unregisterAudioDeviceCallback(audioDeviceCallback) } catch (_: Exception) {}
+            try { prefs.unregisterOnSharedPreferenceChangeListener(this) } catch (_: Exception) {}
+            try { unregisterReceiver(systemEventReceiver) } catch (_: Exception) {}
         }
 
         prefs.edit().putBoolean(KEY_IS_SERVICE_RUNNING, false).apply()
@@ -387,31 +434,30 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         dismissMiniSlider()
         dismissDeviceBanner()
         removeBrightnessOverlay()
-        fullscreenSentinelView?.let { view ->
-            if (view.isAttachedToWindow) windowManager.removeView(view)
-        }
+        safeRemoveView(fullscreenSentinelView)
         fullscreenSentinelView = null
-        floatingView?.let { view ->
-            if (view.isAttachedToWindow) {
-                windowManager.removeView(view)
-            }
-        }
+        safeRemoveView(floatingView)
         floatingView = null
         handleView = null
         handleGlyphView = null
         innerBadgeView = null
         sideBadgeView = null
+        mainHandler.removeCallbacksAndMessages(null)
     }
 
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
         when (key) {
             KEY_WIDTH_DP, KEY_HEIGHT_DP, KEY_TRANSPARENCY_PCT, KEY_SHAPE, KEY_OVERLAY_COLOR, KEY_DISPLAY_MODE, KEY_HANDLE_ICON_STYLE, KEY_AUDIO_STREAM -> {
+                if (key == KEY_AUDIO_STREAM) {
+                    enforceActiveStreamMaxCap()
+                }
                 scheduleCoalescedAppearanceSync()
                 if (key == KEY_AUDIO_STREAM) {
                     refreshForegroundNotification()
                 }
             }
             KEY_PRESET_APPLY_SEQ -> {
+                enforceActiveStreamMaxCap()
                 scheduleCoalescedAppearanceSync()
                 wakeFromIdleAndScheduleDim()
                 applyFullscreenState(lastFullscreenDetected)
@@ -560,7 +606,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         }
     }
 
-    private fun findPresetById(presetId: String): JSONObject? {
+    private fun findPresetById(presetId: String, allowFallbackToFirst: Boolean = false): JSONObject? {
         val raw = prefs.getString(KEY_PRESETS_JSON, null) ?: return null
         return try {
             val arr = JSONArray(raw)
@@ -568,7 +614,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                 val obj = arr.optJSONObject(i) ?: continue
                 if (obj.optString("id") == presetId) return obj
             }
-            arr.optJSONObject(0)
+            if (allowFallbackToFirst) arr.optJSONObject(0) else null
         } catch (_: Exception) {
             null
         }
@@ -591,6 +637,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         val gLocked = gestures?.optString("lockedLongPress")?.takeIf { it.isNotEmpty() }
             ?: ACTION_ID_NONE
         val nextSeq = prefs.getInt(KEY_PRESET_APPLY_SEQ, 0) + 1
+        val snapEdge = obj.optBoolean("snapToEdge", false)
 
         prefs.edit()
             .putString("active_preset_id", obj.optString("id", ""))
@@ -604,6 +651,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             .putString(KEY_AUDIO_STREAM, obj.optString("audioStream", STREAM_MUSIC))
             .putBoolean(KEY_HAPTIC_TAP, hapticStrength != HAPTIC_OFF)
             .putString(KEY_HAPTIC_STRENGTH, hapticStrength)
+            .putBoolean(KEY_SNAP_TO_EDGE, snapEdge)
             .putString(KEY_GESTURE_DOUBLE_TAP, gDouble)
             .putString(KEY_GESTURE_TRIPLE_TAP, gTriple)
             .putString(KEY_GESTURE_INWARD_FLICK, gFlick)
@@ -622,6 +670,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             .putBoolean(KEY_SMOOTH_FADE, obj.optBoolean("smoothFadeAnimation", true))
             .putBoolean(KEY_HIDE_FULLSCREEN, obj.optBoolean("hideInFullscreen", false))
             .apply()
+        enforceActiveStreamMaxCap()
         scheduleCoalescedAppearanceSync()
         refreshForegroundNotification()
     }
@@ -747,9 +796,13 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
         deviceBannerView = banner
         deviceBannerLayoutParams = lp
-        windowManager.addView(banner, lp)
-        repositionMiniSliderCallback?.invoke()
-        mainHandler.postDelayed(dismissBannerRunnable, 6500L)
+        if (safeAddView(banner, lp)) {
+            repositionMiniSliderCallback?.invoke()
+            mainHandler.postDelayed(dismissBannerRunnable, 6500L)
+        } else {
+            deviceBannerView = null
+            deviceBannerLayoutParams = null
+        }
     }
 
     private fun repositionDeviceBannerForOrientation() {
@@ -766,24 +819,26 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             (screenW - sLeft - sRight - dpToPx(24)).coerceAtLeast(dpToPx(180))
         )
         lp.y = max(dpToPx(36), sTop + dpToPx(8))
-        windowManager.updateViewLayout(banner, lp)
+        safeUpdateViewLayout(banner, lp)
     }
 
     private fun dismissDeviceBanner() {
         mainHandler.removeCallbacks(dismissBannerRunnable)
-        deviceBannerView?.let { view ->
-            if (view.isAttachedToWindow) windowManager.removeView(view)
-        }
+        safeRemoveView(deviceBannerView)
         deviceBannerView = null
         deviceBannerLayoutParams = null
         repositionMiniSliderCallback?.invoke()
     }
 
     private fun requestTileRefresh() {
-        TileService.requestListeningState(
-            this,
-            ComponentName(this, FloatingVolumeTileService::class.java)
-        )
+        try {
+            TileService.requestListeningState(
+                this,
+                ComponentName(this, FloatingVolumeTileService::class.java)
+            )
+        } catch (_: Exception) {
+            // Ignored on restricted OEM builds
+        }
     }
 
     private fun handleOrientationCheck(showNotice: Boolean) {
@@ -866,21 +921,9 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         layoutParams.y = clampedY
         lastAppliedLandscape = isLandscape
 
-        if (shouldDockToEdge()) {
-            val editor = prefs.edit()
-            if (isLandscape) {
-                editor.putInt(KEY_POS_X_LANDSCAPE, clampedX)
-            } else {
-                editor.putInt(KEY_POS_X_PORTRAIT, clampedX)
-            }
-            editor.apply()
-        }
-
         applyAppearanceFromPrefs(addIfMissing = false)
 
-        if (view.isAttachedToWindow) {
-            windowManager.updateViewLayout(view, layoutParams)
-        }
+        safeUpdateViewLayout(view, layoutParams)
 
         brightnessFloatingView?.let { bView ->
             if (bView.isAttachedToWindow && !isBrightnessDragging) {
@@ -902,7 +945,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                 val resolved = resolveBrightnessNonOverlap(layoutParams.x, layoutParams.y, bx, by)
                 brightnessLayoutParams.x = resolved.first
                 brightnessLayoutParams.y = resolved.second
-                windowManager.updateViewLayout(bView, brightnessLayoutParams)
+                safeUpdateViewLayout(bView, brightnessLayoutParams)
             }
         }
 
@@ -926,9 +969,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
         layoutParams.x = snappedX
         applyAppearanceFromPrefs(addIfMissing = false)
-        if (view.isAttachedToWindow) {
-            windowManager.updateViewLayout(view, layoutParams)
-        }
+        safeUpdateViewLayout(view, layoutParams)
         savePositionForCurrentOrientation(layoutParams.x, layoutParams.y)
         brightnessFloatingView?.let { bView ->
             if (bView.isAttachedToWindow && !isBrightnessDragging) {
@@ -940,7 +981,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                 )
                 brightnessLayoutParams.x = resolved.first
                 brightnessLayoutParams.y = resolved.second
-                windowManager.updateViewLayout(bView, brightnessLayoutParams)
+                safeUpdateViewLayout(bView, brightnessLayoutParams)
             }
         }
         repositionMiniSliderCallback?.invoke()
@@ -1002,12 +1043,12 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         val actionIntent = Intent(this, FloatingVolumeService::class.java).apply {
             this.action = action
         }
-        return PendingIntent.getService(
-            this,
-            requestCode,
-            actionIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val piFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PendingIntent.getForegroundService(this, requestCode, actionIntent, piFlags)
+        } else {
+            PendingIntent.getService(this, requestCode, actionIntent, piFlags)
+        }
     }
 
     private fun buildForegroundNotification(statusText: String): Notification {
@@ -1112,15 +1153,19 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         }
 
         fullscreenSentinelView = sentinel
-        windowManager.addView(sentinel, lp)
-        sentinel.requestApplyInsets()
+        if (safeAddView(sentinel, lp)) {
+            sentinel.requestApplyInsets()
+        }
     }
 
     private fun reapplyOverlayPositionFromSaved() {
         val view = floatingView
         if (view != null && view.isAttachedToWindow && !isDragging) {
             val (savedX, savedY) = loadPositionForOrientation(isCurrentlyLandscape())
-            val (cx, cy) = clampCoordinates(savedX + oledOffsetPxX, savedY + oledOffsetPxY)
+            var (cx, cy) = clampCoordinates(savedX + oledOffsetPxX, savedY + oledOffsetPxY)
+            if (shouldDockToEdge()) {
+                cx = getDockedEdgeX(cx, currentRootWidthPx())
+            }
             layoutParams.x = cx
             layoutParams.y = cy
             applyAppearanceFromPrefs(addIfMissing = true)
@@ -1146,7 +1191,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             val resolved = resolveBrightnessNonOverlap(layoutParams.x, layoutParams.y, bx, by)
             brightnessLayoutParams.x = resolved.first
             brightnessLayoutParams.y = resolved.second
-            windowManager.updateViewLayout(bView, brightnessLayoutParams)
+            safeUpdateViewLayout(bView, brightnessLayoutParams)
         }
     }
 
@@ -1505,7 +1550,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         layoutParams.y = clampedY
         reorderSideBadgeForScreenEdge()
 
-        windowManager.addView(root, layoutParams)
+        safeAddView(root, layoutParams)
     }
 
     private fun reorderSideBadgeForScreenEdge() {
@@ -2316,7 +2361,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                 val (nx, ny) = computeSliderWindowCoords()
                 sliderLp.x = nx
                 sliderLp.y = ny
-                windowManager.updateViewLayout(scrollContainer, sliderLp)
+                safeUpdateViewLayout(scrollContainer, sliderLp)
             }
         }
 
@@ -2326,8 +2371,13 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         }
 
         miniSliderView = scrollContainer
-        windowManager.addView(scrollContainer, sliderLp)
-        resetMiniSliderTimeout()
+        if (safeAddView(scrollContainer, sliderLp)) {
+            resetMiniSliderTimeout()
+        } else {
+            miniSliderView = null
+            syncMiniSliderCallback = null
+            repositionMiniSliderCallback = null
+        }
     }
 
     private fun resetMiniSliderTimeout() {
@@ -2339,11 +2389,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         mainHandler.removeCallbacks(dismissSliderRunnable)
         syncMiniSliderCallback = null
         repositionMiniSliderCallback = null
-        miniSliderView?.let { view ->
-            if (view.isAttachedToWindow) {
-                windowManager.removeView(view)
-            }
-        }
+        safeRemoveView(miniSliderView)
         miniSliderView = null
     }
 
@@ -2459,6 +2505,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         if (isIdleDimmed) {
             isIdleDimmed = false
             applyAppearanceFromPrefs()
+            applyBrightnessAppearance()
         }
         scheduleAutoDim()
     }
@@ -2471,6 +2518,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         } else if (isIdleDimmed) {
             isIdleDimmed = false
             applyAppearanceFromPrefs()
+            applyBrightnessAppearance()
         }
     }
 
@@ -2582,7 +2630,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
 
         val (clampedX, clampedY) = clampCoordinates(layoutParams.x, layoutParams.y)
         val onRightSide = isOverlayOnRightHalf(clampedX)
-        val dockedX = if (shape == SHAPE_EDGE_TAB && !isDragging) {
+        val dockedX = if (shouldDockToEdge() && !isDragging) {
             getDockedEdgeX(clampedX, currentRootWidthPx())
         } else {
             clampedX
@@ -2597,16 +2645,6 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                 floatArrayOf(r, r, 0f, 0f, 0f, 0f, r, r)
             } else {
                 floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
-            }
-            if (!isDragging && dockedX != clampedX) {
-                val cleanX = (dockedX - oledOffsetPxX).coerceAtLeast(0)
-                val editor = prefs.edit()
-                if (isCurrentlyLandscape()) {
-                    editor.putInt(KEY_POS_X_LANDSCAPE, cleanX)
-                } else {
-                    editor.putInt(KEY_POS_X_PORTRAIT, cleanX)
-                }
-                editor.apply()
             }
         } else if (shape == SHAPE_LINE) {
             overlayDrawable.shape = GradientDrawable.RECTANGLE
@@ -2631,7 +2669,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         handleGlyphView?.invalidate()
 
         if (addIfMissing && root.isAttachedToWindow) {
-            windowManager.updateViewLayout(root, layoutParams)
+            safeUpdateViewLayout(root, layoutParams)
             if (smoothFade) {
                 root.animate().alpha(1f).setDuration(180).start()
             }
@@ -2851,14 +2889,14 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         )
         brightnessLayoutParams.x = resolvedInit.first
         brightnessLayoutParams.y = resolvedInit.second
-        windowManager.addView(bView, brightnessLayoutParams)
+        if (!safeAddView(bView, brightnessLayoutParams)) {
+            brightnessFloatingView = null
+        }
     }
 
     private fun removeBrightnessOverlay() {
         mainHandler.removeCallbacks(brightnessLongPressRunnable)
-        brightnessFloatingView?.let { view ->
-            if (view.isAttachedToWindow) windowManager.removeView(view)
-        }
+        safeRemoveView(brightnessFloatingView)
         brightnessFloatingView = null
     }
 
@@ -2866,34 +2904,38 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         val bView = brightnessFloatingView ?: return
         val wDp = prefs.getInt(KEY_BRIGHTNESS_WIDTH_DP, DEFAULT_BRIGHTNESS_WIDTH_DP).coerceIn(16, 80)
         val hDp = prefs.getInt(KEY_BRIGHTNESS_HEIGHT_DP, DEFAULT_BRIGHTNESS_HEIGHT_DP).coerceIn(48, 160)
-        val pct = prefs.getInt(KEY_TRANSPARENCY_PCT, DEFAULT_TRANSPARENCY_PCT).coerceIn(20, 100)
+        val basePct = prefs.getInt(KEY_TRANSPARENCY_PCT, DEFAULT_TRANSPARENCY_PCT).coerceIn(20, 100)
+        val dimPct = prefs.getInt(KEY_DIM_OPACITY_PCT, DEFAULT_DIM_OPACITY_PCT).coerceIn(0, 50)
+        val effectivePct = if (isIdleDimmed) min(basePct, dimPct) else basePct
         val baseColor = prefs.getInt(KEY_BRIGHTNESS_COLOR, DEFAULT_BRIGHTNESS_COLOR)
 
         brightnessHandleW = dpToPx(wDp)
         brightnessHandleH = dpToPx(hDp)
-        val alphaInt = ((pct / 100f) * 255).toInt().coerceIn(40, 255)
+        val alphaInt = ((effectivePct / 100f) * 255).toInt().coerceIn(25, 255)
 
         brightnessDrawable.shape = GradientDrawable.RECTANGLE
         brightnessDrawable.cornerRadius = min(brightnessHandleW, brightnessHandleH) / 2f
         brightnessDrawable.setColor(
             Color.argb(alphaInt, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
         )
-        brightnessDrawable.setStroke(dpToPx(2), Color.argb(200, 255, 255, 255))
+        brightnessDrawable.setStroke(dpToPx(2), Color.argb(if (isIdleDimmed) 120 else 200, 255, 255, 255))
 
         brightnessLayoutParams.width = brightnessHandleW
         brightnessLayoutParams.height = brightnessHandleH
+        var targetBX = brightnessLayoutParams.x
+        if (prefs.getBoolean(KEY_SNAP_TO_EDGE, false) && !isBrightnessDragging) {
+            targetBX = getDockedEdgeX(targetBX, brightnessHandleW)
+        }
         val resolved = resolveBrightnessNonOverlap(
             layoutParams.x,
             layoutParams.y,
-            brightnessLayoutParams.x,
+            targetBX,
             brightnessLayoutParams.y
         )
         brightnessLayoutParams.x = resolved.first
         brightnessLayoutParams.y = resolved.second
 
-        if (addIfMissing && bView.isAttachedToWindow) {
-            windowManager.updateViewLayout(bView, brightnessLayoutParams)
-        }
+        safeUpdateViewLayout(bView, brightnessLayoutParams)
     }
 
     private fun clampBrightnessCoordinates(x: Int, y: Int): Pair<Int, Int> {
@@ -2940,13 +2982,13 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     private fun setSystemBrightness(target: Int) {
         val clamped = target.coerceIn(10, 255)
         if (!Settings.System.canWrite(this)) {
+            Toast.makeText(
+                this,
+                "Allow Modify System Settings to control screen brightness",
+                Toast.LENGTH_SHORT
+            ).show()
             if (!writeSettingsPromptedThisSession) {
                 writeSettingsPromptedThisSession = true
-                Toast.makeText(
-                    this,
-                    "Allow Modify System Settings to control screen brightness",
-                    Toast.LENGTH_LONG
-                ).show()
                 try {
                     val intent = Intent(
                         Settings.ACTION_MANAGE_WRITE_SETTINGS,
@@ -3007,7 +3049,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         return try {
             val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val end = System.currentTimeMillis()
-            val begin = end - 12_000L
+            val begin = end - 600_000L
             val events = usm.queryEvents(begin, end)
             val event = UsageEvents.Event()
             var latestPkg: String? = null
@@ -3026,7 +3068,13 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                     latestPkg = event.packageName
                 }
             }
-            latestPkg
+            if (latestPkg != null) {
+                latestPkg
+            } else {
+                usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, begin, end)
+                    ?.maxByOrNull { it.lastTimeUsed }
+                    ?.packageName
+            }
         } catch (_: Exception) {
             null
         }
@@ -3098,8 +3146,10 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             if (preAppSavedStream == null) {
                 preAppSavedStream = s
                 preAppSavedVolume = audioManager.getStreamVolume(s)
+                preAppRestoreOnExit = rExit
+            } else {
+                preAppRestoreOnExit = preAppRestoreOnExit || rExit
             }
-            preAppRestoreOnExit = rExit
             val maxV = audioManager.getStreamMaxVolume(s).coerceAtLeast(1)
             val maxAllowed = getMaxAllowedVolume(s)
             val targetLevel = ((tVol / 100f) * maxV).roundToInt().coerceIn(0, maxAllowed)
@@ -3320,6 +3370,8 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     }
 
     companion object {
+        @Volatile
+        var isInstanceRunning: Boolean = false
         const val PREFS_NAME = "FloatingVolumePrefs"
         const val KEY_PRESETS_JSON = "profile_presets_json"
         const val KEY_WIDTH_DP = "width_dp"

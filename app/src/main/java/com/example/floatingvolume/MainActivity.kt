@@ -344,7 +344,11 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) {
+    ) { granted ->
+        if (!Settings.canDrawOverlays(this)) return@registerForActivityResult
+        if (!granted) {
+            Toast.makeText(this, "Service started (notification permission denied)", Toast.LENGTH_SHORT).show()
+        }
         launchFloatingService()
     }
 
@@ -781,12 +785,14 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
     private fun applyThemeAwareButtonSkins() {
         val dark = isDarkModeActive()
+        val btnText = Color.parseColor(if (dark) "#E2E8F0" else "#0F172A")
         btnThemeToggle.text = if (dark) "Dark" else "Light"
         btnThemeToggle.background = makePillDrawable(
             fillHex = if (dark) "#1E293B" else "#FFFFFF",
             strokeHex = if (dark) "#334155" else "#CBD5E1",
             radiusDp = 8f
         )
+        btnThemeToggle.setTextColor(btnText)
 
         btnEditPresets.background = makePillDrawable(
             fillHex = if (presetEditorExpanded) "#2563EB" else if (dark) "#1E293B" else "#FFFFFF",
@@ -829,6 +835,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             strokeHex = if (dark) "#334155" else "#CBD5E1",
             radiusDp = 8f
         )
+        btnResetPresets.setTextColor(btnText)
         syncInlinePresetEditorViews(preserveFocusedInputs = true)
 
         btnAddPerAppRule.background = makePillDrawable("#2563EB", "#3B82F6", radiusDp = 8f)
@@ -837,11 +844,32 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             strokeHex = if (dark) "#334155" else "#CBD5E1",
             radiusDp = 8f
         )
+        btnQuietStartTime.setTextColor(btnText)
         btnQuietEndTime.background = makePillDrawable(
             fillHex = if (dark) "#1E293B" else "#FFFFFF",
             strokeHex = if (dark) "#334155" else "#CBD5E1",
             radiusDp = 8f
         )
+        btnQuietEndTime.setTextColor(btnText)
+
+        btnTestRotate.background = makePillDrawable(
+            fillHex = if (dark) "#1E293B" else "#FFFFFF",
+            strokeHex = if (dark) "#334155" else "#CBD5E1",
+            radiusDp = 10f
+        )
+        btnTestRotate.setTextColor(btnText)
+        btnExportBackup.background = makePillDrawable(
+            fillHex = if (dark) "#1E293B" else "#FFFFFF",
+            strokeHex = if (dark) "#334155" else "#CBD5E1",
+            radiusDp = 10f
+        )
+        btnExportBackup.setTextColor(btnText)
+        btnImportBackup.background = makePillDrawable(
+            fillHex = if (dark) "#1E293B" else "#FFFFFF",
+            strokeHex = if (dark) "#334155" else "#CBD5E1",
+            radiusDp = 10f
+        )
+        btnImportBackup.setTextColor(btnText)
 
         btnOverlayPermission.background = makePillDrawable("#2563EB", "#3B82F6", radiusDp = 10f)
         btnAutostartPermission.background = makePillDrawable("#0F766E", "#14B8A6", radiusDp = 10f)
@@ -983,20 +1011,21 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         }
         tvActiveRuleStatus.text = ruleText
 
+        val dark = isDarkModeActive()
         val manualOverride = prefs.getBoolean(FloatingVolumeService.KEY_MANUAL_OVERRIDE, false)
         val activeId = prefs.getString(KEY_ACTIVE_PRESET_ID, "") ?: ""
         when {
             manualOverride -> {
                 tvPresetSyncBadge.text = "Manual Override"
-                tvPresetSyncBadge.setTextColor(Color.parseColor("#F59E0B"))
+                tvPresetSyncBadge.setTextColor(Color.parseColor(if (dark) "#F59E0B" else "#D97706"))
             }
             activeId == "custom" || activeId.isEmpty() -> {
                 tvPresetSyncBadge.text = "Custom"
-                tvPresetSyncBadge.setTextColor(Color.parseColor("#60A5FA"))
+                tvPresetSyncBadge.setTextColor(Color.parseColor(if (dark) "#60A5FA" else "#2563EB"))
             }
             else -> {
                 tvPresetSyncBadge.text = "Synced"
-                tvPresetSyncBadge.setTextColor(Color.parseColor("#34D399"))
+                tvPresetSyncBadge.setTextColor(Color.parseColor(if (dark) "#34D399" else "#059669"))
             }
         }
     }
@@ -1010,7 +1039,10 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     }
 
     private fun updateServiceButtonsUi() {
-        val running = prefs.getBoolean(FloatingVolumeService.KEY_IS_SERVICE_RUNNING, false)
+        val running = FloatingVolumeService.isInstanceRunning
+        if (prefs.getBoolean(FloatingVolumeService.KEY_IS_SERVICE_RUNNING, false) != running) {
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_IS_SERVICE_RUNNING, running).apply()
+        }
         val dark = isDarkModeActive()
         if (running) {
             btnStartService.text = "●  Floating Service Active"
@@ -1703,12 +1735,18 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             val iconStyle = obj.optString("handleIconStyle", FloatingVolumeService.DEFAULT_HANDLE_ICON_STYLE)
             val opacity = obj.optInt("transparencyPct", FloatingVolumeService.DEFAULT_TRANSPARENCY_PCT).coerceIn(0, 100)
             val maxCap = obj.optInt("maxVolumeLimitPct", 100).coerceIn(30, 100)
+            val snapEdge = obj.optBoolean(
+                "snapToEdge",
+                prefs.getBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, false)
+            )
             val nextSeq = prefs.getInt(FloatingVolumeService.KEY_PRESET_APPLY_SEQ, 0) + 1
 
             suppressPrefReload = true
             prefs.edit()
                 .putString(KEY_ACTIVE_PRESET_ID, id)
+                .putBoolean(FloatingVolumeService.KEY_MANUAL_OVERRIDE, false)
                 .putString(FloatingVolumeService.KEY_SHAPE, shape)
+                .putBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, snapEdge)
                 .putString(FloatingVolumeService.KEY_HANDLE_ICON_STYLE, iconStyle)
                 .putInt(FloatingVolumeService.KEY_TRANSPARENCY_PCT, opacity)
                 .putInt(FloatingVolumeService.KEY_MAX_VOLUME_LIMIT_PCT, maxCap)
@@ -1717,7 +1755,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 .apply()
             suppressPrefReload = false
 
-            if (shape == FloatingVolumeService.SHAPE_EDGE_TAB) {
+            if (shape == FloatingVolumeService.SHAPE_EDGE_TAB || snapEdge) {
                 snapAllOrientationsToEdgeIfNeeded(forceSnap = true)
             }
             syncLiveEditFieldsToCustomizeAndSettings(shape, iconStyle, opacity, maxCap, parsedColor)
@@ -1924,6 +1962,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         val nextSeq = prefs.getInt(FloatingVolumeService.KEY_PRESET_APPLY_SEQ, 0) + 1
         val presetId = obj.optString("id", "")
         val shape = obj.optString("shape", FloatingVolumeService.SHAPE_CIRCLE)
+        val snapEdge = obj.optBoolean("snapToEdge", false)
         val deviceMode = prefs.getString(
             FloatingVolumeService.KEY_AUDIO_DEVICE_MODE,
             FloatingVolumeService.DEFAULT_AUDIO_DEVICE_MODE
@@ -1950,6 +1989,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             .putString(FloatingVolumeService.KEY_AUDIO_STREAM, obj.optString("audioStream", FloatingVolumeService.STREAM_MUSIC))
             .putBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, hapticStrength != FloatingVolumeService.HAPTIC_OFF)
             .putString(FloatingVolumeService.KEY_HAPTIC_STRENGTH, hapticStrength)
+            .putBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, snapEdge)
             .putString(FloatingVolumeService.KEY_GESTURE_DOUBLE_TAP, gDouble)
             .putString(FloatingVolumeService.KEY_GESTURE_TRIPLE_TAP, gTriple)
             .putString(FloatingVolumeService.KEY_GESTURE_INWARD_FLICK, gFlick)
@@ -1970,7 +2010,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             .apply()
         suppressPrefReload = false
 
-        if (shape == FloatingVolumeService.SHAPE_EDGE_TAB) {
+        if (shape == FloatingVolumeService.SHAPE_EDGE_TAB || snapEdge) {
             snapAllOrientationsToEdgeIfNeeded(forceSnap = true)
         }
         loadSavedSettingsIntoViews()
@@ -2596,7 +2636,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
         switchSnapToEdge.setOnCheckedChangeListener { _, isChecked ->
             if (syncingViews) return@setOnCheckedChangeListener
-            prefs.edit().putBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, isChecked).apply()
+            markCustomPresetAndApply { it.putBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, isChecked) }
             if (isChecked) {
                 snapAllOrientationsToEdgeIfNeeded(forceSnap = true)
             } else {
@@ -2836,7 +2876,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         }
 
         btnStartService.setOnClickListener {
-            if (prefs.getBoolean(FloatingVolumeService.KEY_IS_SERVICE_RUNNING, false)) {
+            if (FloatingVolumeService.isInstanceRunning) {
                 return@setOnClickListener
             }
             if (!Settings.canDrawOverlays(this)) {
@@ -3033,6 +3073,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             val colorHex = String.format("#%06X", 0xFFFFFF and colorInt)
             val brightInt = prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_COLOR, FloatingVolumeService.DEFAULT_BRIGHTNESS_COLOR)
             val brightHex = String.format("#%06X", 0xFFFFFF and brightInt)
+            val (maxPX, maxPY) = getMaxBoundsForOrientation(false)
+            val (maxLX, maxLY) = getMaxBoundsForOrientation(true)
+            val (screenW, screenH) = resources.displayMetrics.let { min(it.widthPixels, it.heightPixels) to max(it.widthPixels, it.heightPixels) }
             val gesturesObj = JSONObject().apply {
                 put("doubleTap", prefs.getString(FloatingVolumeService.KEY_GESTURE_DOUBLE_TAP, FloatingVolumeService.DEFAULT_GESTURE_DOUBLE_TAP))
                 put("tripleTap", prefs.getString(FloatingVolumeService.KEY_GESTURE_TRIPLE_TAP, FloatingVolumeService.DEFAULT_GESTURE_TRIPLE_TAP))
@@ -3062,6 +3105,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 put("holdToRepeat", prefs.getBoolean(FloatingVolumeService.KEY_HOLD_TO_REPEAT, true))
                 put("autoStartBoot", prefs.getBoolean(FloatingVolumeService.KEY_AUTO_BOOT, false))
                 put("positionLocked", prefs.getBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, false))
+                put("rotateToast", prefs.getBoolean(FloatingVolumeService.KEY_ROTATE_TOAST, true))
                 put("autoDimSeconds", prefs.getInt(FloatingVolumeService.KEY_AUTO_DIM_SEC, 0))
                 put("dimOpacityPct", prefs.getInt(FloatingVolumeService.KEY_DIM_OPACITY_PCT, 15))
                 put("volumeStep", prefs.getInt(FloatingVolumeService.KEY_VOLUME_STEP, 1))
@@ -3076,8 +3120,26 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 put("avoidSafeZones", prefs.getBoolean(FloatingVolumeService.KEY_AVOID_SAFE_ZONES, FloatingVolumeService.DEFAULT_AVOID_SAFE_ZONES))
                 put("brightnessHandleEnabled", prefs.getBoolean(FloatingVolumeService.KEY_BRIGHTNESS_HANDLE_ENABLED, false))
                 put("brightnessColorHex", brightHex)
+                put("brightnessWidthDp", prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_WIDTH_DP, FloatingVolumeService.DEFAULT_BRIGHTNESS_WIDTH_DP))
                 put("brightnessHeightDp", prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_HEIGHT_DP, FloatingVolumeService.DEFAULT_BRIGHTNESS_HEIGHT_DP))
                 put("showBrightnessInSlider", prefs.getBoolean(FloatingVolumeService.KEY_SHOW_BRIGHTNESS_IN_SLIDER, true))
+                put("activePreset", prefs.getString(KEY_ACTIVE_PRESET_ID, "custom"))
+                put("portraitPos", JSONObject().apply {
+                    put("x", prefs.getInt(FloatingVolumeService.KEY_POS_X_PORTRAIT, (maxPX * 0.88f).toInt()))
+                    put("y", prefs.getInt(FloatingVolumeService.KEY_POS_Y_PORTRAIT, (maxPY * 0.38f).toInt()))
+                })
+                put("landscapePos", JSONObject().apply {
+                    put("x", prefs.getInt(FloatingVolumeService.KEY_POS_X_LANDSCAPE, (maxLX * 0.10f).toInt()))
+                    put("y", prefs.getInt(FloatingVolumeService.KEY_POS_Y_LANDSCAPE, (maxLY * 0.25f).toInt()))
+                })
+                put("brightnessPortraitPos", JSONObject().apply {
+                    put("x", prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_X_PORTRAIT, (screenW * 0.10f).toInt()))
+                    put("y", prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_Y_PORTRAIT, (screenH * 0.56f).toInt()))
+                })
+                put("brightnessLandscapePos", JSONObject().apply {
+                    put("x", prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_X_LANDSCAPE, (screenH * 0.85f).toInt()))
+                    put("y", prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_Y_LANDSCAPE, (screenW * 0.30f).toInt()))
+                })
                 put("gestureActions", gesturesObj)
                 put("quietHours", quietObj)
                 put("perAppRulesEnabled", prefs.getBoolean(FloatingVolumeService.KEY_PER_APP_RULES_ENABLED, false))
@@ -3107,11 +3169,24 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             val root = JSONObject(jsonText)
             val s = root.optJSONObject("settings") ?: root
             val editor = prefs.edit()
+            val prevDark = prefs.getBoolean(FloatingVolumeService.KEY_DARK_THEME, true)
 
-            if (s.has("widthDp")) editor.putInt(FloatingVolumeService.KEY_WIDTH_DP, s.optInt("widthDp"))
-            if (s.has("heightDp")) editor.putInt(FloatingVolumeService.KEY_HEIGHT_DP, s.optInt("heightDp"))
-            if (s.has("transparencyPct")) editor.putInt(FloatingVolumeService.KEY_TRANSPARENCY_PCT, s.optInt("transparencyPct"))
-            if (s.has("shape")) editor.putString(FloatingVolumeService.KEY_SHAPE, s.optString("shape"))
+            val validShapes = setOf(FloatingVolumeService.SHAPE_CIRCLE, FloatingVolumeService.SHAPE_LINE, FloatingVolumeService.SHAPE_EDGE_TAB)
+            val validStreams = setOf(FloatingVolumeService.STREAM_MUSIC, FloatingVolumeService.STREAM_RING, FloatingVolumeService.STREAM_ALARM, FloatingVolumeService.STREAM_VOICE)
+            val validDisplayModes = setOf(FloatingVolumeService.DISPLAY_MINIMAL, FloatingVolumeService.DISPLAY_PERCENT_BADGE, FloatingVolumeService.DISPLAY_SLIDER_FOCUS)
+            val validIconStyles = setOf(FloatingVolumeService.ICON_STYLE_ARROWS, FloatingVolumeService.ICON_STYLE_SPEAKER, FloatingVolumeService.ICON_STYLE_BARS, FloatingVolumeService.ICON_STYLE_DOT, FloatingVolumeService.ICON_STYLE_NONE)
+            val validHaptics = setOf(FloatingVolumeService.HAPTIC_OFF, FloatingVolumeService.HAPTIC_LIGHT, FloatingVolumeService.HAPTIC_MEDIUM, FloatingVolumeService.HAPTIC_STRONG)
+            val validPopouts = setOf(FloatingVolumeService.POPOUT_SWIPE_INWARD, FloatingVolumeService.POPOUT_SINGLE_TAP)
+            val validDeviceModes = setOf(FloatingVolumeService.DEVICE_MODE_OFF, FloatingVolumeService.DEVICE_MODE_AUTO, FloatingVolumeService.DEVICE_MODE_TOAST)
+            val validActions = gestureActionIds.toSet()
+
+            if (s.has("widthDp")) editor.putInt(FloatingVolumeService.KEY_WIDTH_DP, s.optInt("widthDp", FloatingVolumeService.DEFAULT_WIDTH_DP).coerceIn(MIN_WIDTH_DP, MAX_WIDTH_DP))
+            if (s.has("heightDp")) editor.putInt(FloatingVolumeService.KEY_HEIGHT_DP, s.optInt("heightDp", FloatingVolumeService.DEFAULT_HEIGHT_DP).coerceIn(MIN_HEIGHT_DP, MAX_HEIGHT_DP))
+            if (s.has("transparencyPct")) editor.putInt(FloatingVolumeService.KEY_TRANSPARENCY_PCT, s.optInt("transparencyPct", FloatingVolumeService.DEFAULT_TRANSPARENCY_PCT).coerceIn(MIN_ALPHA_PCT, MAX_ALPHA_PCT))
+            if (s.has("shape")) {
+                val shapeVal = s.optString("shape")
+                if (shapeVal in validShapes) editor.putString(FloatingVolumeService.KEY_SHAPE, shapeVal)
+            }
             if (s.has("colorHex")) {
                 try {
                     editor.putInt(FloatingVolumeService.KEY_OVERLAY_COLOR, Color.parseColor(s.getString("colorHex")))
@@ -3122,12 +3197,17 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     editor.putInt(FloatingVolumeService.KEY_BRIGHTNESS_COLOR, Color.parseColor(s.getString("brightnessColorHex")))
                 } catch (_: Exception) {}
             }
-            if (s.has("audioStream")) editor.putString(FloatingVolumeService.KEY_AUDIO_STREAM, s.optString("audioStream"))
+            if (s.has("audioStream")) {
+                val streamVal = s.optString("audioStream")
+                if (streamVal in validStreams) editor.putString(FloatingVolumeService.KEY_AUDIO_STREAM, streamVal)
+            }
             if (s.has("darkTheme")) editor.putBoolean(FloatingVolumeService.KEY_DARK_THEME, s.optBoolean("darkTheme"))
             if (s.has("hapticStrength")) {
                 val strength = s.optString("hapticStrength")
-                editor.putString(FloatingVolumeService.KEY_HAPTIC_STRENGTH, strength)
-                editor.putBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, strength != FloatingVolumeService.HAPTIC_OFF)
+                if (strength in validHaptics) {
+                    editor.putString(FloatingVolumeService.KEY_HAPTIC_STRENGTH, strength)
+                    editor.putBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, strength != FloatingVolumeService.HAPTIC_OFF)
+                }
             } else if (s.has("hapticTap")) {
                 val tap = s.optBoolean("hapticTap")
                 editor.putBoolean(FloatingVolumeService.KEY_HAPTIC_TAP, tap)
@@ -3153,34 +3233,81 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             if (s.has("holdToRepeat")) editor.putBoolean(FloatingVolumeService.KEY_HOLD_TO_REPEAT, s.optBoolean("holdToRepeat"))
             if (s.has("autoStartBoot")) editor.putBoolean(FloatingVolumeService.KEY_AUTO_BOOT, s.optBoolean("autoStartBoot"))
             if (s.has("positionLocked")) editor.putBoolean(FloatingVolumeService.KEY_POSITION_LOCKED, s.optBoolean("positionLocked"))
-            if (s.has("autoDimSeconds")) editor.putInt(FloatingVolumeService.KEY_AUTO_DIM_SEC, s.optInt("autoDimSeconds"))
-            if (s.has("dimOpacityPct")) editor.putInt(FloatingVolumeService.KEY_DIM_OPACITY_PCT, s.optInt("dimOpacityPct"))
-            if (s.has("volumeStep")) editor.putInt(FloatingVolumeService.KEY_VOLUME_STEP, s.optInt("volumeStep"))
-            if (s.has("maxVolumeLimitPct")) editor.putInt(FloatingVolumeService.KEY_MAX_VOLUME_LIMIT_PCT, s.optInt("maxVolumeLimitPct"))
+            if (s.has("rotateToast")) editor.putBoolean(FloatingVolumeService.KEY_ROTATE_TOAST, s.optBoolean("rotateToast"))
+            if (s.has("autoDimSeconds")) {
+                val dimSec = s.optInt("autoDimSeconds", 0).let { if (it in listOf(0, 3, 5, 10)) it else 0 }
+                editor.putInt(FloatingVolumeService.KEY_AUTO_DIM_SEC, dimSec)
+            }
+            if (s.has("dimOpacityPct")) editor.putInt(FloatingVolumeService.KEY_DIM_OPACITY_PCT, s.optInt("dimOpacityPct", 15).coerceIn(0, 50))
+            if (s.has("volumeStep")) {
+                val step = s.optInt("volumeStep", 1).let { if (it in listOf(1, 2, 3, 5)) it else 1 }
+                editor.putInt(FloatingVolumeService.KEY_VOLUME_STEP, step)
+            }
+            if (s.has("maxVolumeLimitPct")) editor.putInt(FloatingVolumeService.KEY_MAX_VOLUME_LIMIT_PCT, s.optInt("maxVolumeLimitPct", 100).coerceIn(30, 100))
             if (s.has("swipeScrub")) editor.putBoolean(FloatingVolumeService.KEY_SWIPE_SCRUB, s.optBoolean("swipeScrub"))
-            if (s.has("popoutSliderMode")) editor.putString(FloatingVolumeService.KEY_POPOUT_MODE, s.optString("popoutSliderMode"))
-            if (s.has("overlayDisplayMode")) editor.putString(FloatingVolumeService.KEY_DISPLAY_MODE, s.optString("overlayDisplayMode"))
-            if (s.has("handleIconStyle")) editor.putString(FloatingVolumeService.KEY_HANDLE_ICON_STYLE, s.optString("handleIconStyle"))
+            if (s.has("popoutSliderMode")) {
+                val popVal = s.optString("popoutSliderMode")
+                if (popVal in validPopouts) editor.putString(FloatingVolumeService.KEY_POPOUT_MODE, popVal)
+            }
+            if (s.has("overlayDisplayMode")) {
+                val dmVal = s.optString("overlayDisplayMode")
+                if (dmVal in validDisplayModes) editor.putString(FloatingVolumeService.KEY_DISPLAY_MODE, dmVal)
+            }
+            if (s.has("handleIconStyle")) {
+                val iconVal = s.optString("handleIconStyle")
+                if (iconVal in validIconStyles) editor.putString(FloatingVolumeService.KEY_HANDLE_ICON_STYLE, iconVal)
+            }
             if (s.has("smoothFadeAnimation")) editor.putBoolean(FloatingVolumeService.KEY_SMOOTH_FADE, s.optBoolean("smoothFadeAnimation"))
             if (s.has("hideInFullscreen")) editor.putBoolean(FloatingVolumeService.KEY_HIDE_FULLSCREEN, s.optBoolean("hideInFullscreen"))
             if (s.has("oledPixelShift")) editor.putBoolean(FloatingVolumeService.KEY_OLED_PIXEL_SHIFT, s.optBoolean("oledPixelShift"))
             if (s.has("avoidSafeZones")) editor.putBoolean(FloatingVolumeService.KEY_AVOID_SAFE_ZONES, s.optBoolean("avoidSafeZones"))
             if (s.has("brightnessHandleEnabled")) editor.putBoolean(FloatingVolumeService.KEY_BRIGHTNESS_HANDLE_ENABLED, s.optBoolean("brightnessHandleEnabled"))
-            if (s.has("brightnessHeightDp")) editor.putInt(FloatingVolumeService.KEY_BRIGHTNESS_HEIGHT_DP, s.optInt("brightnessHeightDp"))
+            if (s.has("brightnessWidthDp")) editor.putInt(FloatingVolumeService.KEY_BRIGHTNESS_WIDTH_DP, s.optInt("brightnessWidthDp", FloatingVolumeService.DEFAULT_BRIGHTNESS_WIDTH_DP).coerceIn(16, 80))
+            if (s.has("brightnessHeightDp")) editor.putInt(FloatingVolumeService.KEY_BRIGHTNESS_HEIGHT_DP, s.optInt("brightnessHeightDp", FloatingVolumeService.DEFAULT_BRIGHTNESS_HEIGHT_DP).coerceIn(48, 160))
             if (s.has("showBrightnessInSlider")) editor.putBoolean(FloatingVolumeService.KEY_SHOW_BRIGHTNESS_IN_SLIDER, s.optBoolean("showBrightnessInSlider"))
+            if (s.has("activePreset")) {
+                val ap = s.optString("activePreset", "custom").ifEmpty { "custom" }
+                editor.putString(KEY_ACTIVE_PRESET_ID, ap)
+            }
+            s.optJSONObject("portraitPos")?.let { pos ->
+                if (pos.has("x")) editor.putInt(FloatingVolumeService.KEY_POS_X_PORTRAIT, pos.optInt("x", 0).coerceAtLeast(0))
+                if (pos.has("y")) editor.putInt(FloatingVolumeService.KEY_POS_Y_PORTRAIT, pos.optInt("y", 0).coerceAtLeast(0))
+            }
+            s.optJSONObject("landscapePos")?.let { pos ->
+                if (pos.has("x")) editor.putInt(FloatingVolumeService.KEY_POS_X_LANDSCAPE, pos.optInt("x", 0).coerceAtLeast(0))
+                if (pos.has("y")) editor.putInt(FloatingVolumeService.KEY_POS_Y_LANDSCAPE, pos.optInt("y", 0).coerceAtLeast(0))
+            }
+            s.optJSONObject("brightnessPortraitPos")?.let { pos ->
+                if (pos.has("x")) editor.putInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_X_PORTRAIT, pos.optInt("x", 0).coerceAtLeast(0))
+                if (pos.has("y")) editor.putInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_Y_PORTRAIT, pos.optInt("y", 0).coerceAtLeast(0))
+            }
+            s.optJSONObject("brightnessLandscapePos")?.let { pos ->
+                if (pos.has("x")) editor.putInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_X_LANDSCAPE, pos.optInt("x", 0).coerceAtLeast(0))
+                if (pos.has("y")) editor.putInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_Y_LANDSCAPE, pos.optInt("y", 0).coerceAtLeast(0))
+            }
             s.optJSONObject("gestureActions")?.let { g ->
                 if (g.has("doubleTap")) {
                     val act = g.optString("doubleTap")
-                    editor.putString(FloatingVolumeService.KEY_GESTURE_DOUBLE_TAP, act)
-                    editor.putBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, act != FloatingVolumeService.ACTION_ID_NONE)
+                    if (act in validActions) {
+                        editor.putString(FloatingVolumeService.KEY_GESTURE_DOUBLE_TAP, act)
+                        editor.putBoolean(FloatingVolumeService.KEY_DOUBLE_TAP_MUTE, act != FloatingVolumeService.ACTION_ID_NONE)
+                    }
                 }
                 if (g.has("tripleTap")) {
                     val act = g.optString("tripleTap")
-                    editor.putString(FloatingVolumeService.KEY_GESTURE_TRIPLE_TAP, act)
-                    editor.putBoolean(FloatingVolumeService.KEY_TRIPLE_TAP_MEDIA, act != FloatingVolumeService.ACTION_ID_NONE)
+                    if (act in validActions) {
+                        editor.putString(FloatingVolumeService.KEY_GESTURE_TRIPLE_TAP, act)
+                        editor.putBoolean(FloatingVolumeService.KEY_TRIPLE_TAP_MEDIA, act != FloatingVolumeService.ACTION_ID_NONE)
+                    }
                 }
-                if (g.has("inwardFlick")) editor.putString(FloatingVolumeService.KEY_GESTURE_INWARD_FLICK, g.optString("inwardFlick"))
-                if (g.has("lockedLongPress")) editor.putString(FloatingVolumeService.KEY_GESTURE_LOCKED_LONG_PRESS, g.optString("lockedLongPress"))
+                if (g.has("inwardFlick")) {
+                    val act = g.optString("inwardFlick")
+                    if (act in validActions) editor.putString(FloatingVolumeService.KEY_GESTURE_INWARD_FLICK, act)
+                }
+                if (g.has("lockedLongPress")) {
+                    val act = g.optString("lockedLongPress")
+                    if (act in validActions) editor.putString(FloatingVolumeService.KEY_GESTURE_LOCKED_LONG_PRESS, act)
+                }
             }
             s.optJSONObject("quietHours")?.let { q ->
                 if (q.has("enabled")) editor.putBoolean(FloatingVolumeService.KEY_QUIET_HOURS_ENABLED, q.optBoolean("enabled"))
@@ -3192,15 +3319,29 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             s.optJSONArray("perAppRules")?.let { rArr ->
                 editor.putString(FloatingVolumeService.KEY_PER_APP_RULES_JSON, rArr.toString())
             }
-            if (s.has("audioDeviceMode")) editor.putString(FloatingVolumeService.KEY_AUDIO_DEVICE_MODE, s.optString("audioDeviceMode"))
+            if (s.has("audioDeviceMode")) {
+                val devMode = s.optString("audioDeviceMode")
+                if (devMode in validDeviceModes) editor.putString(FloatingVolumeService.KEY_AUDIO_DEVICE_MODE, devMode)
+            }
             if (s.has("headphonePresetId")) editor.putString(FloatingVolumeService.KEY_HEADPHONE_PRESET_ID, s.optString("headphonePresetId"))
             if (s.has("speakerPresetId")) editor.putString(FloatingVolumeService.KEY_SPEAKER_PRESET_ID, s.optString("speakerPresetId"))
             val presetsArr = s.optJSONArray("presets")
             if (presetsArr != null && presetsArr.length() > 0) {
                 editor.putString(FloatingVolumeService.KEY_PRESETS_JSON, presetsArr.toString())
             }
+            val nextSeq = prefs.getInt(FloatingVolumeService.KEY_PRESET_APPLY_SEQ, 0) + 1
+            editor.putInt(FloatingVolumeService.KEY_PRESET_APPLY_SEQ, nextSeq)
             editor.apply()
+
             ensurePresetsExist()
+            snapAllOrientationsToEdgeIfNeeded(forceSnap = false)
+
+            val newDark = prefs.getBoolean(FloatingVolumeService.KEY_DARK_THEME, true)
+            if (newDark != prevDark) {
+                AppCompatDelegate.setDefaultNightMode(
+                    if (newDark) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO
+                )
+            }
 
             loadSavedSettingsIntoViews()
             Toast.makeText(this, "Backup restored", Toast.LENGTH_SHORT).show()
@@ -3414,19 +3555,26 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             val bhPx = (prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_HEIGHT_DP, FloatingVolumeService.DEFAULT_BRIGHTNESS_HEIGHT_DP) * density).toInt()
             val maxBX = (targetScreenW - bwPx).coerceAtLeast(1)
             val maxBY = (targetScreenH - bhPx).coerceAtLeast(1)
+            val (safeMinBX, safeMaxBX) = getSafeXRangeForOrientation(isLandscapeTarget, maxBX)
+            val (safeMinBY, safeMaxBY) = getSafeYRangeForOrientation(isLandscapeTarget, maxBY)
             val rawBX = if (isLandscapeTarget) {
                 prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_X_LANDSCAPE, (targetScreenW * 0.85f).toInt())
             } else {
                 prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_X_PORTRAIT, (targetScreenW * 0.10f).toInt())
-            }.coerceIn(0, maxBX)
+            }
             val rawBY = if (isLandscapeTarget) {
                 prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_Y_LANDSCAPE, (targetScreenH * 0.30f).toInt())
             } else {
                 prefs.getInt(FloatingVolumeService.KEY_BRIGHTNESS_POS_Y_PORTRAIT, (targetScreenH * 0.56f).toInt())
-            }.coerceIn(0, maxBY)
+            }.coerceIn(safeMinBY, safeMaxBY)
+            val clampedBX = if (prefs.getBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, false)) {
+                if (rawBX <= (safeMinBX + safeMaxBX) / 2) safeMinBX else safeMaxBX
+            } else {
+                rawBX.coerceIn(safeMinBX, safeMaxBX)
+            }
             val bDotW = (9 * density).toInt()
             val bDotH = (14 * density).toInt()
-            previewBrightnessDot.translationX = (rawBX.toFloat() / maxBX) * (boxWidthPx - bDotW).coerceAtLeast(0)
+            previewBrightnessDot.translationX = (clampedBX.toFloat() / maxBX) * (boxWidthPx - bDotW).coerceAtLeast(0)
             previewBrightnessDot.translationY = (rawBY.toFloat() / maxBY) * (boxHeightPx - bDotH).coerceAtLeast(0)
         } else {
             previewBrightnessDot.visibility = View.GONE

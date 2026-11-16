@@ -24,21 +24,32 @@ class FloatingVolumeTileService : TileService() {
         }
 
         val prefs = getSharedPreferences(FloatingVolumeService.PREFS_NAME, Context.MODE_PRIVATE)
-        val running = prefs.getBoolean(FloatingVolumeService.KEY_IS_SERVICE_RUNNING, false)
+        val running = FloatingVolumeService.isInstanceRunning
+        if (prefs.getBoolean(FloatingVolumeService.KEY_IS_SERVICE_RUNNING, false) != running) {
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_IS_SERVICE_RUNNING, running).apply()
+        }
         val serviceIntent = Intent(this, FloatingVolumeService::class.java)
 
         if (running) {
             stopService(serviceIntent)
             updateTile(isActive = false)
         } else {
-            ContextCompat.startForegroundService(this, serviceIntent)
-            updateTile(isActive = true)
+            try {
+                ContextCompat.startForegroundService(this, serviceIntent)
+                updateTile(isActive = true)
+            } catch (_: Exception) {
+                updateTile(isActive = false)
+                openAppSettingsScreen()
+            }
         }
     }
 
     private fun refreshTileState() {
         val prefs = getSharedPreferences(FloatingVolumeService.PREFS_NAME, Context.MODE_PRIVATE)
-        val running = prefs.getBoolean(FloatingVolumeService.KEY_IS_SERVICE_RUNNING, false)
+        val running = FloatingVolumeService.isInstanceRunning
+        if (prefs.getBoolean(FloatingVolumeService.KEY_IS_SERVICE_RUNNING, false) != running) {
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_IS_SERVICE_RUNNING, running).apply()
+        }
         updateTile(isActive = running && Settings.canDrawOverlays(this))
     }
 
@@ -48,7 +59,11 @@ class FloatingVolumeTileService : TileService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             tile.subtitle = if (isActive) "Active" else "Off"
         }
-        tile.updateTile()
+        try {
+            tile.updateTile()
+        } catch (_: Exception) {
+            // Tile detached
+        }
     }
 
     private fun openAppSettingsScreen() {
