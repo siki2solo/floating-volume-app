@@ -1,2 +1,1 @@
-# Keep relational JSON keys and SQLite storage helpers intact
--keepattributes *Annotation*
+# Add project specific ProGuard rules here.

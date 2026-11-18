@@ -105,6 +105,8 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     private var repeatUpperHalf = true
     private var isIdleDimmed = false
     private var isFullscreenHidden = false
+    private var isProtectedAppHidden = false
+    private var isCustomRuleHidden = false
     private var touchSlop = 0
     private var scrubAccumY = 0f
     private var handleWidthPx = 0
@@ -153,6 +155,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     private val longPressRunnable = Runnable {
         if (isPositionLocked() || isScrubbing) return@Runnable
         isDragging = true
+        dismissMiniSlider()
         handleGlyphView?.invalidate()
         floatingView?.apply {
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -163,6 +166,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
     private val brightnessLongPressRunnable = Runnable {
         if (isPositionLocked() || isBrightnessScrubbing) return@Runnable
         isBrightnessDragging = true
+        dismissMiniSlider()
         brightnessFloatingView?.apply {
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             animate().scaleX(1.08f).scaleY(1.08f).setDuration(120).start()
@@ -503,10 +507,14 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                 }
             }
             KEY_QUIET_HOURS_ENABLED, KEY_QUIET_START, KEY_QUIET_END, KEY_QUIET_PRESET_ID,
-            KEY_PER_APP_RULES_ENABLED, KEY_PER_APP_RULES_JSON -> {
-                prefs.edit().putBoolean(KEY_MANUAL_OVERRIDE, false).apply()
+            KEY_PER_APP_RULES_ENABLED, KEY_PER_APP_RULES_JSON,
+            KEY_PAUSE_IN_PROTECTED_APPS, KEY_TEMP_PAUSE_UNTIL_MS -> {
+                if (key != KEY_PAUSE_IN_PROTECTED_APPS && key != KEY_TEMP_PAUSE_UNTIL_MS) {
+                    prefs.edit().putBoolean(KEY_MANUAL_OVERRIDE, false).apply()
+                }
                 lastForegroundPackage = ""
                 evaluateQuietHoursAndAppRules()
+                updateOverlayVisibilityState()
             }
             KEY_AUDIO_DEVICE_MODE, KEY_HEADPHONE_PRESET_ID, KEY_SPEAKER_PRESET_ID -> {
                 val mode = prefs.getString(KEY_AUDIO_DEVICE_MODE, DEFAULT_AUDIO_DEVICE_MODE) ?: DEVICE_MODE_OFF
@@ -1080,6 +1088,55 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             .build()
     }
 
+    private fun handleWindowInsets(insets: WindowInsets): WindowInsets {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val statusHidden = !insets.isVisible(WindowInsets.Type.statusBars())
+            applyFullscreenState(statusHidden)
+            val sysCutout = insets.getInsetsIgnoringVisibility(
+                WindowInsets.Type.displayCutout() or WindowInsets.Type.systemBars()
+            )
+            val imeInsets = insets.getInsets(WindowInsets.Type.ime())
+            val nextL = kotlin.math.max(sysCutout.left, imeInsets.left)
+            val nextT = kotlin.math.max(sysCutout.top, imeInsets.top)
+            val nextR = kotlin.math.max(sysCutout.right, imeInsets.right)
+            val nextB = kotlin.math.max(sysCutout.bottom, imeInsets.bottom)
+            if (nextL != safeInsetLeft || nextT != safeInsetTop || nextR != safeInsetRight || nextB != safeInsetBottom) {
+                safeInsetLeft = nextL
+                safeInsetTop = nextT
+                safeInsetRight = nextR
+                safeInsetBottom = nextB
+                repositionOverlaysForSafeZones()
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            val cutout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) insets.displayCutout else null
+            @Suppress("DEPRECATION")
+            val nextL = kotlin.math.max(insets.systemWindowInsetLeft, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) (cutout?.safeInsetLeft ?: 0) else 0)
+            @Suppress("DEPRECATION")
+            val nextT = kotlin.math.max(insets.systemWindowInsetTop, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) (cutout?.safeInsetTop ?: 0) else 0)
+            @Suppress("DEPRECATION")
+            val nextR = kotlin.math.max(insets.systemWindowInsetRight, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) (cutout?.safeInsetRight ?: 0) else 0)
+            @Suppress("DEPRECATION")
+            val nextB = kotlin.math.max(insets.systemWindowInsetBottom, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) (cutout?.safeInsetBottom ?: 0) else 0)
+            if (nextL != safeInsetLeft || nextT != safeInsetTop || nextR != safeInsetRight || nextB != safeInsetBottom) {
+                safeInsetLeft = nextL
+                safeInsetTop = nextT
+                safeInsetRight = nextR
+                safeInsetBottom = nextB
+                repositionOverlaysForSafeZones()
+            }
+        }
+        return insets
+    }
+
+    private fun syncWindowMetricsInsets() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                handleWindowInsets(windowManager.currentWindowMetrics.windowInsets)
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun createFullscreenSentinel() {
         val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -1088,18 +1145,23 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
+        // Zero-area (0x0 px) corner window so Google Play Store, Package Installer, and
+        // Android Permission Controller never detect a screen-covering overlay.
         val sentinel = View(this).apply {
             alpha = 0f
         }
         val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
+            0,
+            0,
             overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -1107,44 +1169,10 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             }
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            sentinel.setOnApplyWindowInsetsListener { _, insets ->
-                val statusHidden = !insets.isVisible(WindowInsets.Type.statusBars())
-                applyFullscreenState(statusHidden)
-                val sysCutout = insets.getInsetsIgnoringVisibility(
-                    WindowInsets.Type.displayCutout() or WindowInsets.Type.systemBars()
-                )
-                val imeInsets = insets.getInsets(WindowInsets.Type.ime())
-                val nextL = kotlin.math.max(sysCutout.left, imeInsets.left)
-                val nextT = kotlin.math.max(sysCutout.top, imeInsets.top)
-                val nextR = kotlin.math.max(sysCutout.right, imeInsets.right)
-                val nextB = kotlin.math.max(sysCutout.bottom, imeInsets.bottom)
-                if (nextL != safeInsetLeft || nextT != safeInsetTop || nextR != safeInsetRight || nextB != safeInsetBottom) {
-                    safeInsetLeft = nextL
-                    safeInsetTop = nextT
-                    safeInsetRight = nextR
-                    safeInsetBottom = nextB
-                    repositionOverlaysForSafeZones()
-                }
-                insets
-            }
-        } else {
-            @Suppress("DEPRECATION")
-            sentinel.setOnApplyWindowInsetsListener { _, insets ->
-                val cutout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) insets.displayCutout else null
-                val nextL = kotlin.math.max(insets.systemWindowInsetLeft, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) (cutout?.safeInsetLeft ?: 0) else 0)
-                val nextT = kotlin.math.max(insets.systemWindowInsetTop, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) (cutout?.safeInsetTop ?: 0) else 0)
-                val nextR = kotlin.math.max(insets.systemWindowInsetRight, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) (cutout?.safeInsetRight ?: 0) else 0)
-                val nextB = kotlin.math.max(insets.systemWindowInsetBottom, if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) (cutout?.safeInsetBottom ?: 0) else 0)
-                if (nextL != safeInsetLeft || nextT != safeInsetTop || nextR != safeInsetRight || nextB != safeInsetBottom) {
-                    safeInsetLeft = nextL
-                    safeInsetTop = nextT
-                    safeInsetRight = nextR
-                    safeInsetBottom = nextB
-                    repositionOverlaysForSafeZones()
-                }
-                insets
-            }
+        sentinel.setOnApplyWindowInsetsListener { _, insets ->
+            handleWindowInsets(insets)
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             @Suppress("DEPRECATION")
             sentinel.setOnSystemUiVisibilityChangeListener { visibility ->
                 val statusHidden = (visibility and View.SYSTEM_UI_FLAG_FULLSCREEN) != 0
@@ -1156,6 +1184,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         if (safeAddView(sentinel, lp)) {
             sentinel.requestApplyInsets()
         }
+        syncWindowMetricsInsets()
     }
 
     private fun reapplyOverlayPositionFromSaved() {
@@ -1203,16 +1232,36 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         repositionMiniSliderCallback?.invoke()
     }
 
+    private fun isTempPaused(): Boolean {
+        val until = prefs.getLong(KEY_TEMP_PAUSE_UNTIL_MS, 0L)
+        return until > System.currentTimeMillis()
+    }
+
+    private fun isOverlayCurrentlyHidden(): Boolean {
+        return isFullscreenHidden || isProtectedAppHidden || isCustomRuleHidden || isTempPaused()
+    }
+
+    private fun updateOverlayVisibilityState() {
+        val hide = isOverlayCurrentlyHidden()
+        val targetVis = if (hide) View.GONE else View.VISIBLE
+        if (floatingView?.visibility != targetVis) {
+            floatingView?.visibility = targetVis
+        }
+        if (brightnessFloatingView?.visibility != targetVis) {
+            brightnessFloatingView?.visibility = targetVis
+        }
+        if (hide) {
+            dismissMiniSlider()
+            dismissDeviceBanner()
+        }
+    }
+
     private fun applyFullscreenState(fullscreenDetected: Boolean) {
         lastFullscreenDetected = fullscreenDetected
         val shouldHide = fullscreenDetected && prefs.getBoolean(KEY_HIDE_FULLSCREEN, false)
         if (isFullscreenHidden == shouldHide) return
         isFullscreenHidden = shouldHide
-        floatingView?.visibility = if (shouldHide) View.GONE else View.VISIBLE
-        brightnessFloatingView?.visibility = if (shouldHide) View.GONE else View.VISIBLE
-        if (shouldHide) {
-            dismissMiniSlider()
-        }
+        updateOverlayVisibilityState()
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -1550,6 +1599,10 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         layoutParams.y = clampedY
         reorderSideBadgeForScreenEdge()
 
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            handleWindowInsets(insets)
+        }
+        root.visibility = if (isOverlayCurrentlyHidden()) View.GONE else View.VISIBLE
         safeAddView(root, layoutParams)
     }
 
@@ -2669,8 +2722,9 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         handleGlyphView?.invalidate()
 
         if (addIfMissing && root.isAttachedToWindow) {
+            root.visibility = if (isOverlayCurrentlyHidden()) View.GONE else View.VISIBLE
             safeUpdateViewLayout(root, layoutParams)
-            if (smoothFade) {
+            if (smoothFade && !isOverlayCurrentlyHidden()) {
                 root.animate().alpha(1f).setDuration(180).start()
             }
         }
@@ -2784,7 +2838,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                     Gravity.CENTER
                 )
             )
-            visibility = if (isFullscreenHidden) View.GONE else View.VISIBLE
+            visibility = if (isOverlayCurrentlyHidden()) View.GONE else View.VISIBLE
         }
 
         val scrubStepPx = dpToPx(16).toFloat()
@@ -2989,6 +3043,8 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             ).show()
             if (!writeSettingsPromptedThisSession) {
                 writeSettingsPromptedThisSession = true
+                prefs.edit().putLong(KEY_TEMP_PAUSE_UNTIL_MS, System.currentTimeMillis() + 15_000L).apply()
+                updateOverlayVisibilityState()
                 try {
                     val intent = Intent(
                         Settings.ACTION_MANAGE_WRITE_SETTINGS,
@@ -3163,7 +3219,36 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         }
     }
 
+    private fun isProtectedSystemPackage(pkg: String): Boolean {
+        if (pkg.isEmpty()) return false
+        val lower = pkg.lowercase()
+        return lower == "com.android.vending" ||
+            lower == "com.android.settings" ||
+            lower.contains("packageinstaller") ||
+            lower.contains("permissioncontroller") ||
+            lower == "com.oplus.appdetail" ||
+            lower == "com.miui.securitycenter"
+    }
+
     private fun evaluateQuietHoursAndAppRules() {
+        syncWindowMetricsInsets()
+
+        val fgPkgNow = queryForegroundAppPackage() ?: ""
+        val pauseInProtected = prefs.getBoolean(KEY_PAUSE_IN_PROTECTED_APPS, DEFAULT_PAUSE_IN_PROTECTED_APPS)
+        val nextProtectedHidden = pauseInProtected && isProtectedSystemPackage(fgPkgNow)
+        val matchedRuleNow = getMatchedPerAppRuleObject(fgPkgNow)
+        val nextCustomHidden = matchedRuleNow?.optBoolean("hideOverlay", false) == true
+
+        if (nextProtectedHidden != isProtectedAppHidden || nextCustomHidden != isCustomRuleHidden || isTempPaused()) {
+            isProtectedAppHidden = nextProtectedHidden
+            isCustomRuleHidden = nextCustomHidden
+            val statusHidden = nextProtectedHidden || nextCustomHidden
+            if (prefs.getBoolean(KEY_IS_PROTECTED_APP_HIDDEN, false) != statusHidden) {
+                prefs.edit().putBoolean(KEY_IS_PROTECTED_APP_HIDDEN, statusHidden).apply()
+            }
+            updateOverlayVisibilityState()
+        }
+
         val inQuietHours = isQuietHoursCurrentlyActive()
 
         if (inQuietHours) {
@@ -3192,7 +3277,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             val restoreId = prefs.getString("pre_quiet_preset_id", "") ?: ""
             prefs.edit().remove("pre_quiet_preset_id").apply()
             if (prefs.getBoolean(KEY_PER_APP_RULES_ENABLED, false)) {
-                val fgPkg = queryForegroundAppPackage() ?: ""
+                val fgPkg = fgPkgNow
                 val matchedOnExitQuiet = getMatchedPerAppRuleObject(fgPkg)
                 val appPresetId = matchedOnExitQuiet?.optString("presetId")
                 if (!appPresetId.isNullOrEmpty()) {
@@ -3205,10 +3290,16 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             }
             lastForegroundPackage = ""
             val mode = prefs.getString(KEY_AUDIO_DEVICE_MODE, DEFAULT_AUDIO_DEVICE_MODE) ?: DEVICE_MODE_OFF
-            if (mode == DEVICE_MODE_AUTO && isExternalAudioConnected()) {
-                val hpId = prefs.getString(KEY_HEADPHONE_PRESET_ID, DEFAULT_HEADPHONE_PRESET_ID) ?: ""
-                findPresetById(hpId)?.let { applyPresetFromService(it, isManualTap = false) }
-                return
+            if (mode == DEVICE_MODE_AUTO) {
+                val devId = if (isExternalAudioConnected()) {
+                    prefs.getString(KEY_HEADPHONE_PRESET_ID, DEFAULT_HEADPHONE_PRESET_ID) ?: ""
+                } else {
+                    prefs.getString(KEY_SPEAKER_PRESET_ID, DEFAULT_SPEAKER_PRESET_ID) ?: ""
+                }
+                if (devId.isNotEmpty()) {
+                    findPresetById(devId)?.let { applyPresetFromService(it, isManualTap = false) }
+                    return
+                }
             }
             if (restoreId.isNotEmpty() && restoreId != "custom") {
                 findPresetById(restoreId)?.let { applyPresetFromService(it, isManualTap = false) }
@@ -3222,12 +3313,11 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
             }
             return
         }
-        val fgPkg = queryForegroundAppPackage() ?: return
-        if (fgPkg == packageName || fgPkg == lastForegroundPackage) return
-        lastForegroundPackage = fgPkg
+        if (fgPkgNow.isEmpty() || fgPkgNow == packageName || fgPkgNow == lastForegroundPackage) return
+        lastForegroundPackage = fgPkgNow
         prefs.edit().putBoolean(KEY_MANUAL_OVERRIDE, false).apply()
 
-        val matchedRuleObj = getMatchedPerAppRuleObject(fgPkg)
+        val matchedRuleObj = matchedRuleNow
         val matchedPresetId = matchedRuleObj?.optString("presetId")
         val matchedLabel = matchedRuleObj?.optString("appLabel") ?: ""
         if (!matchedPresetId.isNullOrEmpty()) {
@@ -3251,9 +3341,13 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
                 val restoreId = prefs.getString("pre_app_rule_preset_id", "") ?: ""
                 prefs.edit().remove("pre_app_rule_preset_id").apply()
                 val mode = prefs.getString(KEY_AUDIO_DEVICE_MODE, DEFAULT_AUDIO_DEVICE_MODE) ?: DEVICE_MODE_OFF
-                if (mode == DEVICE_MODE_AUTO && isExternalAudioConnected()) {
-                    val hpId = prefs.getString(KEY_HEADPHONE_PRESET_ID, DEFAULT_HEADPHONE_PRESET_ID) ?: ""
-                    findPresetById(hpId)?.let { applyPresetFromService(it, isManualTap = false) }
+                if (mode == DEVICE_MODE_AUTO) {
+                    val devId = if (isExternalAudioConnected()) {
+                        prefs.getString(KEY_HEADPHONE_PRESET_ID, DEFAULT_HEADPHONE_PRESET_ID) ?: ""
+                    } else {
+                        prefs.getString(KEY_SPEAKER_PRESET_ID, DEFAULT_SPEAKER_PRESET_ID) ?: ""
+                    }
+                    findPresetById(devId)?.let { applyPresetFromService(it, isManualTap = false) }
                 } else if (restoreId.isNotEmpty() && restoreId != "custom") {
                     findPresetById(restoreId)?.let { applyPresetFromService(it, isManualTap = false) }
                 }
@@ -3392,6 +3486,9 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val KEY_HANDLE_ICON_STYLE = "handle_icon_style"
         const val KEY_SMOOTH_FADE = "smooth_fade_animation"
         const val KEY_HIDE_FULLSCREEN = "hide_in_fullscreen"
+        const val KEY_PAUSE_IN_PROTECTED_APPS = "pause_in_protected_apps"
+        const val KEY_IS_PROTECTED_APP_HIDDEN = "is_protected_app_hidden"
+        const val KEY_TEMP_PAUSE_UNTIL_MS = "temp_pause_until_ms"
 
         const val KEY_HAPTIC_TAP = "haptic_tap"
         const val KEY_HAPTIC_STRENGTH = "haptic_strength"
@@ -3484,6 +3581,7 @@ class FloatingVolumeService : Service(), SharedPreferences.OnSharedPreferenceCha
         const val DEFAULT_DISPLAY_MODE = "slider_focus"
         const val DEFAULT_HANDLE_ICON_STYLE = "arrows"
         const val DEFAULT_AVOID_SAFE_ZONES = true
+        const val DEFAULT_PAUSE_IN_PROTECTED_APPS = true
         const val DEFAULT_HAPTIC_STRENGTH = "medium"
         const val DEFAULT_AUDIO_DEVICE_MODE = "off"
         const val DEFAULT_HEADPHONE_PRESET_ID = "bedtime"

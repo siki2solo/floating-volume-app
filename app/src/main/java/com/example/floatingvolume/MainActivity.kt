@@ -155,6 +155,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     private lateinit var switchHideFullscreen: Switch
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")
+    private lateinit var switchPauseProtectedApps: Switch
+
+    @SuppressLint("UseSwitchCompatOrMaterialCode")
     private lateinit var switchSnapToEdge: Switch
 
     @SuppressLint("UseSwitchCompatOrMaterialCode")
@@ -459,6 +462,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
     override fun onResume() {
         super.onResume()
+        if (prefs.getLong(FloatingVolumeService.KEY_TEMP_PAUSE_UNTIL_MS, 0L) > 0L) {
+            prefs.edit().putLong(FloatingVolumeService.KEY_TEMP_PAUSE_UNTIL_MS, 0L).apply()
+        }
         prefs.registerOnSharedPreferenceChangeListener(this)
         audioManager.registerAudioDeviceCallback(audioRouteCallback, uiHandler)
         updatePermissionUi()
@@ -481,6 +487,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             FloatingVolumeService.KEY_IS_SERVICE_RUNNING -> updateServiceButtonsUi()
             FloatingVolumeService.KEY_MANUAL_OVERRIDE,
             FloatingVolumeService.KEY_ACTIVE_APP_RULE_LABEL,
+            FloatingVolumeService.KEY_IS_PROTECTED_APP_HIDDEN,
             KEY_ACTIVE_PRESET_ID -> updatePresetPriorityStatusRow()
             FloatingVolumeService.KEY_PRESET_APPLY_SEQ,
             FloatingVolumeService.KEY_AUDIO_DEVICE_MODE -> {
@@ -594,7 +601,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     private fun isTouchInsideInteractiveHorizontalView(rawX: Int, rawY: Int): Boolean {
         fun checkView(v: View?): Boolean {
             if (v == null || v.visibility != View.VISIBLE) return false
-            if (v is SeekBar || v is HorizontalScrollView || v is Spinner) {
+            if (v is SeekBar || v is HorizontalScrollView || v is Spinner || v is android.widget.CompoundButton) {
                 val rect = Rect()
                 v.getGlobalVisibleRect(rect)
                 if (rect.contains(rawX, rawY)) return true
@@ -718,6 +725,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         switchSingleTapSlider = findViewById(R.id.switchSingleTapSlider)
         switchSmoothFade = findViewById(R.id.switchSmoothFade)
         switchHideFullscreen = findViewById(R.id.switchHideFullscreen)
+        switchPauseProtectedApps = findViewById(R.id.switchPauseProtectedApps)
         switchSnapToEdge = findViewById(R.id.switchSnapToEdge)
         switchHoldRepeat = findViewById(R.id.switchHoldRepeat)
         switchAutoBoot = findViewById(R.id.switchAutoBoot)
@@ -1003,7 +1011,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         ) ?: FloatingVolumeService.DEVICE_MODE_OFF
         val headphonesActive = deviceMode != FloatingVolumeService.DEVICE_MODE_OFF && isExternalAudioConnectedLocal()
 
+        val protectedHidden = prefs.getBoolean(FloatingVolumeService.KEY_IS_PROTECTED_APP_HIDDEN, false)
         val ruleText = when {
+            protectedHidden -> "Auto-Hidden (Play Store / System)"
             quietActive -> "Quiet Hours Active"
             activeAppLabel.isNotEmpty() -> "App Rule: $activeAppLabel"
             headphonesActive -> "Headphone Rule Active"
@@ -1246,6 +1256,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 put("enabled", true)
                 put("targetVolumePct", -1)
                 put("restoreVolumeOnExit", true)
+                put("hideOverlay", false)
             })
             put(JSONObject().apply {
                 put("id", "rule_spotify")
@@ -1255,6 +1266,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 put("enabled", false)
                 put("targetVolumePct", -1)
                 put("restoreVolumeOnExit", true)
+                put("hideOverlay", false)
             })
         }
     }
@@ -1395,6 +1407,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             val enabled = rule.optBoolean("enabled", true)
             val targetVolPct = rule.optInt("targetVolumePct", -1)
             val restoreOnExit = rule.optBoolean("restoreVolumeOnExit", true)
+            val hideOverlay = rule.optBoolean("hideOverlay", false)
 
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -1419,8 +1432,9 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             } else {
                 ""
             }
+            val hideBadge = if (hideOverlay) " · Hide Overlay" else ""
             val titleTv = TextView(this).apply {
-                text = "$label → ${findPresetNameById(presetId)}$volBadge"
+                text = "$label → ${findPresetNameById(presetId)}$volBadge$hideBadge"
                 textSize = 12f
                 setTypeface(null, Typeface.BOLD)
                 setTextColor(Color.parseColor(if (dark) "#F8FAFC" else "#0F172A"))
@@ -1540,12 +1554,17 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             text = "Restore previous volume on app exit"
             isChecked = existing?.optBoolean("restoreVolumeOnExit", true) ?: true
         }
+        val cbHideOverlay = CheckBox(this).apply {
+            text = "Hide floating overlay while app is open"
+            isChecked = existing?.optBoolean("hideOverlay", false) ?: false
+        }
 
         box.addView(etLabel)
         box.addView(etPkg)
         box.addView(spPreset)
         box.addView(etTargetVol)
         box.addView(cbRestoreOnExit)
+        box.addView(cbHideOverlay)
 
         AlertDialog.Builder(this)
             .setTitle(if (editIndex == null) "Add Per-App Preset Rule" else "Edit Per-App Rule")
@@ -1569,6 +1588,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                     put("enabled", existing?.optBoolean("enabled", true) ?: true)
                     put("targetVolumePct", parsedVol)
                     put("restoreVolumeOnExit", cbRestoreOnExit.isChecked)
+                    put("hideOverlay", cbHideOverlay.isChecked)
                 }
                 if (editIndex != null && editIndex in 0 until current.length()) {
                     current.put(editIndex, ruleJson)
@@ -2152,6 +2172,8 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             prefs.getBoolean(FloatingVolumeService.KEY_SMOOTH_FADE, true)
         switchHideFullscreen.isChecked =
             prefs.getBoolean(FloatingVolumeService.KEY_HIDE_FULLSCREEN, false)
+        switchPauseProtectedApps.isChecked =
+            prefs.getBoolean(FloatingVolumeService.KEY_PAUSE_IN_PROTECTED_APPS, true)
         switchSnapToEdge.isChecked =
             prefs.getBoolean(FloatingVolumeService.KEY_SNAP_TO_EDGE, true)
         switchHoldRepeat.isChecked =
@@ -2632,6 +2654,11 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         switchHideFullscreen.setOnCheckedChangeListener { _, isChecked ->
             if (syncingViews) return@setOnCheckedChangeListener
             markCustomPresetAndApply { it.putBoolean(FloatingVolumeService.KEY_HIDE_FULLSCREEN, isChecked) }
+        }
+
+        switchPauseProtectedApps.setOnCheckedChangeListener { _, isChecked ->
+            if (syncingViews) return@setOnCheckedChangeListener
+            prefs.edit().putBoolean(FloatingVolumeService.KEY_PAUSE_IN_PROTECTED_APPS, isChecked).apply()
         }
 
         switchSnapToEdge.setOnCheckedChangeListener { _, isChecked ->
@@ -3116,6 +3143,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
                 put("handleIconStyle", prefs.getString(FloatingVolumeService.KEY_HANDLE_ICON_STYLE, FloatingVolumeService.DEFAULT_HANDLE_ICON_STYLE))
                 put("smoothFadeAnimation", prefs.getBoolean(FloatingVolumeService.KEY_SMOOTH_FADE, true))
                 put("hideInFullscreen", prefs.getBoolean(FloatingVolumeService.KEY_HIDE_FULLSCREEN, false))
+                put("pauseInProtectedApps", prefs.getBoolean(FloatingVolumeService.KEY_PAUSE_IN_PROTECTED_APPS, FloatingVolumeService.DEFAULT_PAUSE_IN_PROTECTED_APPS))
                 put("oledPixelShift", prefs.getBoolean(FloatingVolumeService.KEY_OLED_PIXEL_SHIFT, false))
                 put("avoidSafeZones", prefs.getBoolean(FloatingVolumeService.KEY_AVOID_SAFE_ZONES, FloatingVolumeService.DEFAULT_AVOID_SAFE_ZONES))
                 put("brightnessHandleEnabled", prefs.getBoolean(FloatingVolumeService.KEY_BRIGHTNESS_HANDLE_ENABLED, false))
@@ -3259,6 +3287,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
             }
             if (s.has("smoothFadeAnimation")) editor.putBoolean(FloatingVolumeService.KEY_SMOOTH_FADE, s.optBoolean("smoothFadeAnimation"))
             if (s.has("hideInFullscreen")) editor.putBoolean(FloatingVolumeService.KEY_HIDE_FULLSCREEN, s.optBoolean("hideInFullscreen"))
+            if (s.has("pauseInProtectedApps")) editor.putBoolean(FloatingVolumeService.KEY_PAUSE_IN_PROTECTED_APPS, s.optBoolean("pauseInProtectedApps"))
             if (s.has("oledPixelShift")) editor.putBoolean(FloatingVolumeService.KEY_OLED_PIXEL_SHIFT, s.optBoolean("oledPixelShift"))
             if (s.has("avoidSafeZones")) editor.putBoolean(FloatingVolumeService.KEY_AVOID_SAFE_ZONES, s.optBoolean("avoidSafeZones"))
             if (s.has("brightnessHandleEnabled")) editor.putBoolean(FloatingVolumeService.KEY_BRIGHTNESS_HANDLE_ENABLED, s.optBoolean("brightnessHandleEnabled"))
@@ -3644,8 +3673,13 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
         tvSavedPositions.text = "Portrait: ($px, $py) px  |  Landscape: ($lx, $ly) px"
     }
 
+    private fun markTemporarySettingsPause() {
+        prefs.edit().putLong(FloatingVolumeService.KEY_TEMP_PAUSE_UNTIL_MS, System.currentTimeMillis() + 15_000L).apply()
+    }
+
     private fun requestOverlayPermissionIfNeeded() {
         if (!Settings.canDrawOverlays(this)) {
+            markTemporarySettingsPause()
             val intent = Intent(
                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:$packageName")
@@ -3665,6 +3699,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
     private fun requestBackgroundAutostartPermission() {
         if (!isBackgroundAutostartGranted()) {
             try {
+                markTemporarySettingsPause()
                 val batteryIntent = Intent(
                     Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
                     Uri.parse("package:$packageName")
@@ -3687,6 +3722,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
         for (candidate in oemIntents) {
             if (candidate.resolveActivity(packageManager) != null) {
+                markTemporarySettingsPause()
                 autostartPermissionLauncher.launch(candidate)
                 return
             }
@@ -3720,6 +3756,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
     private fun requestWriteSettingsPermissionIfNeeded() {
         if (!Settings.System.canWrite(this)) {
+            markTemporarySettingsPause()
             val intent = Intent(
                 Settings.ACTION_MANAGE_WRITE_SETTINGS,
                 Uri.parse("package:$packageName")
@@ -3732,6 +3769,7 @@ class MainActivity : AppCompatActivity(), SharedPreferences.OnSharedPreferenceCh
 
     private fun requestUsageAccessPermissionIfNeeded() {
         if (!isUsageAccessGranted()) {
+            markTemporarySettingsPause()
             try {
                 usageAccessPermissionLauncher.launch(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
             } catch (_: Exception) {
